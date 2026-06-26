@@ -5,6 +5,7 @@ __pycache__/
 /map_assets_manifest.example.json
 /assets/
 /build_rag_economy_manager.ps1
+/publish_release.ps1
 /installer/
 /tests/
 .pytest_cache/
