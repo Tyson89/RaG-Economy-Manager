@@ -1,0 +1,13 @@
+Game-icons.net marker icons
+---------------------------
+
+Selected map marker icons are from Game-icons.net.
+License: Creative Commons Attribution 3.0 Unported (CC BY 3.0)
+Source: https://game-icons.net/
+
+Icons currently referenced by RaG Economy Manager:
+- Icons made by Delapouite: bear-head, chicken, cow, horse-head, rabbit-head, shambling-zombie, sheep
+- Icons made by Lorc: fox-head, wolf-head
+- Icons made by Caro Asercion: boar, deer-head
+- Icons made by Skoll: goat, pig
+
