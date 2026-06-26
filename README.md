@@ -140,29 +140,6 @@ Basic workflow:
 - Windows installer build through PyInstaller `onedir` plus Inno Setup
 - Manual GitHub Releases update check with SHA-256 installer verification
 
-## Windows Installer
-
-Requirements:
-
-- Python dependencies from `requirements.txt`
-- Inno Setup 6 at `C:\Program Files (x86)\Inno Setup 6\ISCC.exe`
-
-Build application, installer, and checksum:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\build_rag_economy_manager.ps1
-```
-
-Outputs:
-
-- `dist\RaG_Economy_Manager\RaG_Economy_Manager.exe`
-- `dist\installer\RaG_Economy_Manager_Setup.exe`
-- `dist\installer\RaG_Economy_Manager_Setup.exe.sha256`
-
-Attach both installer and checksum to a GitHub Release tagged with a version newer than `APP_VERSION` in `rag_version.py`, for example `v0.71-beta`. Repository and release assets must be publicly readable; no GitHub token is embedded in the application. Draft releases are ignored. Prereleases are supported. Keep installer filename stable so updater can identify it.
-
-Installer and application should be Authenticode-signed before public distribution. SHA-256 verification protects download integrity but does not replace code signing.
-
 ## Current Validation Rules
 
 The validator tries to avoid noisy false positives. Some DayZ entries are valid even when they look incomplete.
