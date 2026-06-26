@@ -2,7 +2,7 @@
 
 RaG Economy Manager is a Windows beta tool for DayZ server owners who need to inspect, edit, validate, and explain mission economy files without hand-editing every XML file blind.
 
-Current version: `0.70 Beta`
+Current version: `0.80 Beta`
 
 License: Freeware - Proprietary / All Rights Reserved
 
