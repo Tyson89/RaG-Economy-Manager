@@ -6013,6 +6013,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             state["offset_y"] = min(0.0, max(canvas_h - map_h, float(state.get("offset_y", 0.0))))
 
     def on_ce_zones_map_configure(self, event=None):
+        if self.active_module != "ce_zones":
+            return
         if self.ce_zones_map_state.get("zoom", 0.0) <= 0:
             self.draw_ce_zones_map()
 
@@ -7671,6 +7673,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if page is None:
             return
         self.active_module = module_id
+        for key, module_page in self.module_pages.items():
+            if key == module_id:
+                module_page.grid()
+            else:
+                module_page.grid_remove()
         page.tkraise()
         labels = {
             "dashboard": "Current module: Dashboard",
@@ -12106,10 +12113,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.draw_territory_map()
 
     def on_territory_map_configure(self, event=None):
+        if self.active_module != "territories":
+            return
         state = self.territory_map_state
         if state["zoom"] == 1.0 and state["offset_x"] == 0.0 and state["offset_y"] == 0.0:
             self.fit_territory_map()
-        self.draw_territory_map()
+        self.schedule_territory_map_draw(fast=True)
 
     def on_territory_map_mousewheel(self, event):
         state = self.territory_map_state
