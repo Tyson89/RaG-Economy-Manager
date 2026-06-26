@@ -2326,6 +2326,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.config_highlight_after_id = None
         self.config_search_after_id = None
         self.validation_refresh_after_id = None
+        self.window_geometry_after_id = None
         self.selected_source_path: str | None = None
         self.dirty_source_keys_cache: set[str] = set()
         self.config_paths: list[str] = []
@@ -20466,11 +20467,19 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         window.after(20, lambda: center_window(window, self))
 
     def on_window_configure(self, event=None):
-        if event is not None and event.widget is self:
+        if event is None or event.widget is not self or self.window_geometry_after_id is not None:
+            return
+        self.window_geometry_after_id = self.after(250, self.capture_window_geometry)
+
+    def capture_window_geometry(self):
+        self.window_geometry_after_id = None
+        try:
             state = self.state()
-            self.saved_settings["window_state"] = "zoomed" if state == "zoomed" else "normal"
-            if state == "normal":
-                self.saved_settings["window_geometry"] = self.geometry()
+        except tk.TclError:
+            return
+        self.saved_settings["window_state"] = "zoomed" if state == "zoomed" else "normal"
+        if state == "normal":
+            self.saved_settings["window_geometry"] = self.geometry()
 
     def on_close(self):
         if self.dirty:
@@ -20484,6 +20493,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                     return
                 if self.dirty:
                     return
+        if "tk" in self.__dict__:
+            if self.window_geometry_after_id is not None:
+                self.after_cancel(self.window_geometry_after_id)
+            self.capture_window_geometry()
         save_settings(self.saved_settings)
         self.destroy()
 
