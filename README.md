@@ -262,8 +262,6 @@ maps/livonia.png
 maps/sakhal.png
 ```
 
-Optional manifests named `manifest.json`, `map_assets_manifest.json`, or `maps.json` are supported at the repository root or as a GitHub release asset. See `map_assets_manifest.example.json`.
-
 Users can also import a local custom map image from the `Change map` dialog. Imported maps are copied into local app data, not linked to the original file path.
 
 ## CE Zones
