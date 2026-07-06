@@ -37,6 +37,8 @@ See `LICENSE.txt` for full terms. Third-party asset licences remain covered by `
 
 ![Dashboard](screenshots/Dashboard.png)
 
+Dashboard provides a compact mission status band, clickable health totals, expandable module coverage, required-file detection, a prioritized issue queue, unsaved-source navigation, and validation freshness tracking.
+
 ### Types
 
 ![Types](screenshots/Types.png)
@@ -108,7 +110,7 @@ Basic workflow:
 1. Open a copied DayZ mission folder with `Open mission`, or create a fresh official mission from `Tools`.
 2. Choose the detected map or import/download a map image.
 3. Use `Validate Workspace` when you want syntax and reference checks.
-4. Use the Dashboard Analysis Report to jump to issues.
+4. Use Dashboard `Needs attention`, health totals, and coverage rows to jump to issues or incomplete mission areas.
 5. Edit the relevant module.
 6. Use `Save` for the selected source or `Save All` for every dirty source.
 7. Export `Validation Report` before sharing files with testers.
@@ -123,7 +125,7 @@ Basic workflow:
 - Rolling pre-save backups and backup restore tool
 - Manual change reports plus optional local autosave of reports
 - Mission-wide validation report as TXT and JSON
-- Dashboard issue list with navigation into relevant modules
+- Dashboard mission/map/save status, validation freshness, clickable health totals, grouped coverage, required-file detection, prioritized issues, full issue browser, and unsaved-source navigation
 - Duplicate classname detection and resolver
 - Types relation editing for `category`, `tag`, `usage`, and `value`
 - Types flags editing for `count_in_cargo`, `count_in_hoarder`, `count_in_map`, `count_in_player`, `crafted`, and `deloot`

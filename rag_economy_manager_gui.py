@@ -3309,6 +3309,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.dashboard_vars = {}
         self.dashboard_issue_listbox = None
         self.dashboard_targets = {}
+        self.dashboard_coverage_tree = None
+        self.dashboard_attention_tree = None
+        self.dashboard_unsaved_tree = None
+        self.dashboard_health_buttons = {}
+        self.dashboard_missing_iids = []
+        self.last_workspace_validation_at = None
+        self.workspace_validation_stale = True
         self.tool_search_var = tk.StringVar(value="")
         self.tool_rows = []
         self.log_analyzer_paths: list[str] = []
@@ -4782,60 +4789,114 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         page.grid(row=0, column=0, sticky="nsew")
         page.columnconfigure(0, weight=1)
         page.columnconfigure(1, weight=1)
-        page.rowconfigure(1, weight=1)
+        page.rowconfigure(2, weight=1)
         self.module_pages["dashboard"] = page
 
-        overview = ttk.LabelFrame(page, text="Mission overview", padding=12)
-        overview.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-        overview.columnconfigure(1, weight=1)
-        overview_actions = ttk.Frame(overview, style="Card.TFrame")
-        overview_actions.grid(row=0, column=2, rowspan=9, sticky="ne", padx=(12, 0))
-        self.make_info_button(overview_actions, "dashboard")
-        fields = [
-            ("workspace", "Workspace"),
-            ("entries", "Type entries"),
-            ("spawnable_entries", "Spawnabletypes"),
-            ("random_preset_entries", "Randompresets"),
-            ("events", "Events"),
-            ("sources", "Source files"),
-            ("configs", "Config files"),
-            ("definitions", "Definitions"),
-            ("dirty", "Unsaved"),
-        ]
-        for row, (key, label) in enumerate(fields):
-            ttk.Label(overview, text=label, style="FieldName.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=3)
-            variable = tk.StringVar(value="-")
-            self.dashboard_vars[key] = variable
-            ttk.Label(overview, textvariable=variable, style="FieldMuted.TLabel").grid(row=row, column=1, sticky="w", pady=3)
+        mission = ttk.LabelFrame(page, text="Mission status", padding=10)
+        mission.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        mission.columnconfigure(1, weight=1)
+        mission.columnconfigure(3, weight=1)
+        mission.columnconfigure(5, weight=1)
+        for key in ("workspace", "map", "validation", "unsaved_summary"):
+            self.dashboard_vars[key] = tk.StringVar(value="-")
+        ttk.Label(mission, text="Mission", style="FieldName.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(mission, textvariable=self.dashboard_vars["workspace"], style="FieldMuted.TLabel").grid(row=0, column=1, columnspan=5, sticky="ew")
+        ttk.Label(mission, text="Map", style="FieldName.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(5, 0))
+        ttk.Label(mission, textvariable=self.dashboard_vars["map"], style="FieldMuted.TLabel").grid(row=1, column=1, sticky="w", pady=(5, 0))
+        ttk.Label(mission, text="Validation", style="FieldName.TLabel").grid(row=1, column=2, sticky="w", padx=(18, 8), pady=(5, 0))
+        ttk.Label(mission, textvariable=self.dashboard_vars["validation"], style="FieldMuted.TLabel").grid(row=1, column=3, sticky="w", pady=(5, 0))
+        ttk.Label(mission, text="Unsaved", style="FieldName.TLabel").grid(row=1, column=4, sticky="w", padx=(18, 8), pady=(5, 0))
+        ttk.Label(mission, textvariable=self.dashboard_vars["unsaved_summary"], style="FieldMuted.TLabel").grid(row=1, column=5, sticky="w", pady=(5, 0))
+        mission_actions = ttk.Frame(mission, style="Card.TFrame")
+        mission_actions.grid(row=0, column=6, rowspan=2, sticky="ne", padx=(10, 0))
+        self.make_info_button(mission_actions, "dashboard")
 
-        health = ttk.LabelFrame(page, text="Health", padding=12)
-        health.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
-        health.columnconfigure(0, weight=1)
-        health.rowconfigure(5, weight=1)
-        for row, key in enumerate(["errors", "warnings", "hints", "duplicates", "unknown_relations"]):
-            variable = tk.StringVar(value="-")
-            self.dashboard_vars[key] = variable
-            ttk.Label(health, textvariable=variable, style="FieldMuted.TLabel").grid(row=row, column=0, sticky="w", pady=3)
-        health_actions = ttk.Frame(health, style="Card.TFrame")
-        health_actions.grid(row=6, column=0, sticky="w", pady=(12, 0))
-        self.make_button(health_actions, "Open issues in Types", self.dashboard_show_issues, variant="action", tooltip="Switch to Types and show entries with errors or warnings.")
+        health = ttk.LabelFrame(page, text="Health", padding=8)
+        health.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        health_specs = (
+            ("errors", "Errors", lambda: self.dashboard_focus_attention("error")),
+            ("warnings", "Warnings", lambda: self.dashboard_focus_attention("warning")),
+            ("hints", "Hints", lambda: self.dashboard_focus_attention("info")),
+            ("dirty", "Dirty files", self.dashboard_focus_unsaved),
+            ("missing", "Missing required", self.dashboard_focus_missing),
+        )
+        for column, (key, label, command) in enumerate(health_specs):
+            health.columnconfigure(column, weight=1, uniform="dashboard-health")
+            button = tk.Button(
+                health,
+                text=f"{label}\n-",
+                command=command,
+                bg=GRAPHITE_CARD_SOFT,
+                fg=GRAPHITE_TEXT,
+                activebackground=GRAPHITE_BORDER,
+                activeforeground=GRAPHITE_TEXT,
+                relief="flat",
+                borderwidth=0,
+                height=2,
+                font=("Segoe UI", 9, "bold"),
+                cursor="hand2",
+            )
+            button.grid(row=0, column=column, sticky="ew", padx=(0, 6) if column < len(health_specs) - 1 else 0)
+            self.dashboard_health_buttons[key] = button
 
-        details = ttk.LabelFrame(page, text="Analysis report", padding=12)
-        details.grid(row=1, column=1, sticky="nsew")
-        details.rowconfigure(0, weight=1)
-        details.columnconfigure(0, weight=1)
-        self.dashboard_issue_listbox = tk.Listbox(details, bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Consolas", 9), exportselection=False)
-        self.dashboard_issue_listbox.grid(row=0, column=0, sticky="nsew")
-        self.dashboard_issue_listbox.bind("<Double-Button-1>", lambda event: self.open_dashboard_selection())
-        issue_scroll = ttk.Scrollbar(details, command=self.dashboard_issue_listbox.yview)
-        issue_scroll.grid(row=0, column=1, sticky="ns")
-        issue_x_scroll = ttk.Scrollbar(details, command=self.dashboard_issue_listbox.xview, orient="horizontal")
-        issue_x_scroll.grid(row=1, column=0, sticky="ew")
-        self.dashboard_issue_listbox.configure(yscrollcommand=issue_scroll.set, xscrollcommand=issue_x_scroll.set)
-        details_actions = ttk.Frame(details, style="Card.TFrame")
-        details_actions.grid(row=2, column=0, columnspan=2, sticky="w", pady=(12, 0))
-        self.make_button(details_actions, "Open selected", self.open_dashboard_selection, variant="action", tooltip="Open the selected dashboard item in the relevant module.")
-        self.make_button(details_actions, "Refresh dashboard", self.refresh_dashboard, tooltip="Refresh dashboard counts and issue groups.")
+        coverage = ttk.LabelFrame(page, text="Coverage", padding=8)
+        coverage.grid(row=2, column=0, sticky="nsew", padx=(0, 8), pady=(0, 8))
+        coverage.columnconfigure(0, weight=1)
+        coverage.rowconfigure(0, weight=1)
+        self.dashboard_coverage_tree = ttk.Treeview(coverage, columns=("files", "entries", "issues", "state"), show="tree headings", selectmode="browse", style="Economy.Treeview", height=13)
+        self.dashboard_coverage_tree.heading("#0", text="Area")
+        for column, label, width in (("files", "Files", 52), ("entries", "Entries", 60), ("issues", "Issues", 82), ("state", "State", 92)):
+            self.dashboard_coverage_tree.heading(column, text=label)
+            self.dashboard_coverage_tree.column(column, width=width, anchor="w", stretch=column == "state")
+        self.dashboard_coverage_tree.column("#0", width=145, stretch=True)
+        self.dashboard_coverage_tree.grid(row=0, column=0, sticky="nsew")
+        coverage_scroll = ttk.Scrollbar(coverage, command=self.dashboard_coverage_tree.yview)
+        coverage_scroll.grid(row=0, column=1, sticky="ns")
+        self.dashboard_coverage_tree.configure(yscrollcommand=coverage_scroll.set)
+        self.dashboard_coverage_tree.bind("<Double-Button-1>", lambda _event: self.open_dashboard_selection())
+        self.dashboard_coverage_tree.bind("<Return>", lambda _event: self.open_dashboard_selection())
+        for tag, color in (("error", GRAPHITE_ERROR), ("warning", GRAPHITE_WARNING), ("dirty", GRAPHITE_INFO_HOVER), ("ready", GRAPHITE_SUCCESS), ("missing", GRAPHITE_ERROR), ("optional", GRAPHITE_MUTED)):
+            self.dashboard_coverage_tree.tag_configure(tag, foreground=color)
+
+        attention = ttk.LabelFrame(page, text="Needs attention", padding=8)
+        attention.grid(row=2, column=1, sticky="nsew", pady=(0, 8))
+        attention.columnconfigure(0, weight=1)
+        attention.rowconfigure(0, weight=1)
+        self.dashboard_attention_tree = ttk.Treeview(attention, columns=("severity", "summary"), show="tree headings", selectmode="browse", style="Economy.Treeview", height=13)
+        self.dashboard_attention_tree.heading("#0", text="Module / item")
+        self.dashboard_attention_tree.heading("severity", text="Severity")
+        self.dashboard_attention_tree.heading("summary", text="Issue")
+        self.dashboard_attention_tree.column("#0", width=135, stretch=False)
+        self.dashboard_attention_tree.column("severity", width=68, stretch=False)
+        self.dashboard_attention_tree.column("summary", width=260, stretch=True)
+        self.dashboard_attention_tree.grid(row=0, column=0, sticky="nsew")
+        attention_scroll = ttk.Scrollbar(attention, command=self.dashboard_attention_tree.yview)
+        attention_scroll.grid(row=0, column=1, sticky="ns")
+        self.dashboard_attention_tree.configure(yscrollcommand=attention_scroll.set)
+        self.dashboard_attention_tree.bind("<Double-Button-1>", lambda _event: self.open_dashboard_selection())
+        self.dashboard_attention_tree.bind("<Return>", lambda _event: self.open_dashboard_selection())
+        self.dashboard_attention_tree.tag_configure("error", foreground=GRAPHITE_ERROR)
+        self.dashboard_attention_tree.tag_configure("warning", foreground=GRAPHITE_WARNING)
+        self.dashboard_attention_tree.tag_configure("info", foreground=GRAPHITE_MUTED)
+        attention_actions = ttk.Frame(attention, style="Card.TFrame")
+        attention_actions.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.make_button(attention_actions, "Open selected", self.open_dashboard_selection, variant="action", tooltip="Open selected issue in its module.")
+        self.make_button(attention_actions, "Show all issues", self.open_dashboard_all_issues, tooltip="Open complete issue list outside Dashboard.")
+
+        unsaved = ttk.LabelFrame(page, text="Unsaved sources", padding=8)
+        unsaved.grid(row=3, column=0, columnspan=2, sticky="ew")
+        unsaved.columnconfigure(0, weight=1)
+        self.dashboard_unsaved_tree = ttk.Treeview(unsaved, columns=("module", "source"), show="headings", selectmode="browse", style="Economy.Treeview", height=3)
+        self.dashboard_unsaved_tree.heading("module", text="Module")
+        self.dashboard_unsaved_tree.heading("source", text="Source")
+        self.dashboard_unsaved_tree.column("module", width=125, stretch=False)
+        self.dashboard_unsaved_tree.column("source", width=520, stretch=True)
+        self.dashboard_unsaved_tree.grid(row=0, column=0, sticky="ew")
+        unsaved_scroll = ttk.Scrollbar(unsaved, command=self.dashboard_unsaved_tree.yview)
+        unsaved_scroll.grid(row=0, column=1, sticky="ns")
+        self.dashboard_unsaved_tree.configure(yscrollcommand=unsaved_scroll.set)
+        self.dashboard_unsaved_tree.bind("<Double-Button-1>", lambda _event: self.open_dashboard_selection())
+        self.dashboard_unsaved_tree.bind("<Return>", lambda _event: self.open_dashboard_selection())
         self.refresh_dashboard()
 
     def dashboard_show_duplicates(self):
@@ -7569,8 +7630,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def update_ce_zones_dirty_status(self):
         if self.ce_zones_dirty_layers:
             self.ce_zones_status_var.set(f"{len(self.ce_zones_dirty_layers)} edited CE layer(s). Save layer writes selected mask.")
+            self.workspace_validation_stale = True
         else:
             self.ce_zones_status_var.set("No unsaved CE layer edits.")
+        self.refresh_dashboard()
 
     def draw_ce_zones_paint_preview(self, event, layer):
         canvas = self.ce_zones_canvas
@@ -8644,17 +8707,27 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.set_status("Weather saved", "success")
 
     def selected_dashboard_target(self):
-        if self.dashboard_issue_listbox is None:
-            return None
-        selected = self.dashboard_issue_listbox.curselection()
-        if not selected:
-            return None
-        return self.dashboard_targets.get(selected[0])
+        for tree in (self.dashboard_attention_tree, self.dashboard_unsaved_tree, self.dashboard_coverage_tree):
+            if tree is None:
+                continue
+            selected = tree.selection()
+            if selected:
+                target = self.dashboard_targets.get(selected[0])
+                if target is not None:
+                    return target
+        if self.dashboard_issue_listbox is not None:
+            selected = self.dashboard_issue_listbox.curselection()
+            if selected:
+                return self.dashboard_targets.get(selected[0])
+        return None
 
     def open_dashboard_selection(self):
         target = self.selected_dashboard_target()
         if target is None:
             return
+        self.open_dashboard_target(target)
+
+    def open_dashboard_target(self, target):
         opened = False
         kind = target[0]
         line = target[2] if len(target) > 2 and isinstance(target[2], int) else None
@@ -8708,7 +8781,109 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.set_status("Issue target opened", "success")
         else:
             self.set_status("Could not find exact issue target in loaded data", "warning")
-        return
+        return opened
+
+    def dashboard_focus_attention(self, severity):
+        tree = self.dashboard_attention_tree
+        if tree is None:
+            return
+        for parent in tree.get_children():
+            for iid in tree.get_children(parent):
+                if severity in tree.item(iid, "tags"):
+                    tree.item(parent, open=True)
+                    tree.selection_set(iid)
+                    tree.focus(iid)
+                    tree.see(iid)
+                    tree.focus_set()
+                    return
+        if any(issue.severity == severity for issue in self.issues):
+            self.open_dashboard_all_issues(severity)
+        else:
+            self.set_status(f"No {severity} issues", "success")
+
+    def dashboard_focus_unsaved(self):
+        tree = self.dashboard_unsaved_tree
+        if tree is None:
+            return
+        rows = tree.get_children()
+        if rows and self.dashboard_targets.get(rows[0]) is not None:
+            tree.selection_set(rows[0])
+            tree.focus(rows[0])
+            tree.see(rows[0])
+            tree.focus_set()
+        else:
+            self.set_status("No unsaved sources", "success")
+
+    def dashboard_focus_missing(self):
+        tree = self.dashboard_coverage_tree
+        if tree is None or not self.dashboard_missing_iids:
+            self.set_status("No required files missing", "success")
+            return
+        iid = self.dashboard_missing_iids[0]
+        parent = tree.parent(iid)
+        if parent:
+            tree.item(parent, open=True)
+        tree.selection_set(iid)
+        tree.focus(iid)
+        tree.see(iid)
+        tree.focus_set()
+
+    def open_dashboard_all_issues(self, severity_filter=None):
+        issues = [issue for issue in self.issues if severity_filter is None or issue.severity == severity_filter]
+        issues = sorted(issues, key=lambda issue: ({"error": 0, "warning": 1, "info": 2}.get(issue.severity, 3), self.issue_module_sort_key(self.issue_module_id(issue)), issue.name.casefold(), issue.message.casefold()))
+        if not issues:
+            messagebox.showinfo(APP_TITLE, "No issues found.", parent=self)
+            return
+        window = tk.Toplevel(self)
+        window.title(f"{severity_filter.title()} Issues" if severity_filter else "All Workspace Issues")
+        window.geometry("1180x680")
+        window.minsize(820, 480)
+        window.configure(bg=GRAPHITE_BG)
+        window.transient(self)
+        apply_app_icon(window)
+        shell = ttk.Frame(window, padding=12)
+        shell.pack(fill="both", expand=True)
+        shell.columnconfigure(0, weight=1)
+        shell.rowconfigure(0, weight=1)
+        tree = ttk.Treeview(shell, columns=("severity", "module", "item", "issue", "source"), show="headings", selectmode="browse", style="Economy.Treeview")
+        for column, label, width, stretch in (
+            ("severity", "Severity", 80, False),
+            ("module", "Module", 115, False),
+            ("item", "Item", 180, False),
+            ("issue", "Issue", 500, True),
+            ("source", "Source", 210, True),
+        ):
+            tree.heading(column, text=label)
+            tree.column(column, width=width, anchor="w", stretch=stretch)
+        tree.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(shell, command=tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scroll.set)
+        tree.tag_configure("error", foreground=GRAPHITE_ERROR)
+        tree.tag_configure("warning", foreground=GRAPHITE_WARNING)
+        tree.tag_configure("info", foreground=GRAPHITE_MUTED)
+        targets = {}
+        for index, issue in enumerate(issues):
+            iid = f"all-issue-{index}"
+            source = self.source_display_name(issue.source_path) if issue.source_path else ""
+            tree.insert("", "end", iid=iid, values=(issue.severity.title(), self.issue_module_label(issue), issue.name, issue.message, source), tags=(issue.severity,))
+            targets[iid] = self.issue_target(issue)
+
+        def open_selected():
+            selected = tree.selection()
+            if not selected:
+                return
+            target = targets.get(selected[0])
+            if target is not None and self.open_dashboard_target(target):
+                window.destroy()
+
+        tree.bind("<Double-Button-1>", lambda _event: open_selected())
+        tree.bind("<Return>", lambda _event: open_selected())
+        actions = ttk.Frame(shell)
+        actions.grid(row=1, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        self.make_button(actions, "Open selected", open_selected, variant="action")
+        self.make_button(actions, "Close", window.destroy)
+        window.after(20, lambda: center_window(window, self))
 
     def select_source_path(self, source_path, line=None, column=None):
         self.switch_module("types")
@@ -9674,6 +9849,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def set_definitions_dirty(self, dirty=True):
         self.definitions_dirty = bool(dirty)
+        if dirty:
+            self.workspace_validation_stale = True
         self.refresh_definition_lists()
         self.refresh_definitions_dependents(log_message=False)
         self.set_dirty(True)
@@ -10273,6 +10450,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return
         workspace = discover_mission_workspace(path)
         self.mission_workspace = workspace
+        self.last_workspace_validation_at = None
+        self.workspace_validation_stale = True
         self.set_selected_map_key("")
         self.map_prompted_for_workspace = ""
         self.mapgroupproto_path = ""
@@ -19042,6 +19221,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.issues = []
         self.validation_issues = []
         self.analysis_issues = []
+        self.last_workspace_validation_at = None
+        self.workspace_validation_stale = True
         self.loaded_paths = []
         self.mission_workspace = None
         self.mapgroupproto_path = ""
@@ -19353,6 +19534,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.validate_mapgroupproto_current_text(show_success=False)
             mapgroupproto_issues = list(self.mapgroupproto_issues)
         self.set_validation_issues(file_issues + self.validate_loaded_entries() + self.spawnable_issues + self.random_preset_issues + self.event_issues + weather_issues + mapgroupproto_issues + self.validate_loaded_config_files(), mode="Workspace validation")
+        self.last_workspace_validation_at = datetime.now()
+        self.workspace_validation_stale = False
         kept = f" Kept {len(self.analysis_issues)} economy hint(s)." if self.analysis_issues else ""
         self.log(f"Workspace validation complete.{kept}", "success")
         self.refresh_spawnable_table()
@@ -21513,6 +21696,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             + self.validate_loaded_config_files(),
             mode="Workspace validation",
         )
+        self.last_workspace_validation_at = datetime.now()
+        self.workspace_validation_stale = False
+        self.refresh_dashboard()
 
     def mission_validation_report_data(self):
         issues = list(getattr(self, "issues", []))
@@ -22442,6 +22628,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if not source_path:
             return
         self.dirty_source_keys_cache.add(self.normalized_path(source_path))
+        self.workspace_validation_stale = True
         self.set_dirty(True)
 
     def recompute_dirty_sources(self):
@@ -22872,11 +23059,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def refresh_dashboard(self):
         if not self.dashboard_vars:
             return
-        duplicates = get_duplicate_groups(self.entries)
         errors = [issue for issue in self.issues if issue.severity == "error"]
         warnings = [issue for issue in self.issues if issue.severity == "warning"]
         infos = [issue for issue in self.issues if issue.severity == "info"]
-        unknown_relations = [issue for issue in warnings if "Unknown " in issue.message and "cfglimitsdefinition.xml" in issue.message]
         event_paths = self.event_source_paths()
         event_spawn_paths = self.event_spawn_source_paths()
         event_group_paths = self.event_group_source_paths()
@@ -22887,18 +23072,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         environment_path = self.__dict__.get("environment_path", "")
         environment_root = self.__dict__.get("environment_root")
         environment_paths = [environment_path] if environment_path and environment_root is not None else []
-        dirty_type_paths = [path for path in self.loaded_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
-        dirty_spawnable_paths = [path for path in spawnable_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
-        dirty_random_preset_paths = [path for path in random_preset_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
-        dirty_event_paths = [path for path in event_paths + event_spawn_paths + event_group_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
-        dirty_territory_paths = [path for path in territory_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
-        dirty_environment_paths = [path for path in environment_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
-        dirty_economycore_paths = [path for path in economycore_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
         mapgroupproto_paths = [self.mapgroupproto_path] if self.mapgroupproto_path else []
-        dirty_mapgroupproto_paths = [path for path in mapgroupproto_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
-        dirty_config_paths = [path for path in self.config_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
-        dirty_profile_paths = [path for path in self.profile_config_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
-        dirty_paths = dirty_type_paths + dirty_spawnable_paths + dirty_random_preset_paths + dirty_event_paths + dirty_environment_paths + dirty_territory_paths + dirty_economycore_paths + dirty_mapgroupproto_paths + dirty_config_paths + dirty_profile_paths
+        mapgrouppos_paths = [self.mapgrouppos_path] if self.mapgrouppos_path else []
+        weather_paths = [self.weather_path] if self.weather_path else []
+        definition_paths = list(getattr(self.mission_workspace, "cfglimits_paths", [])) if self.mission_workspace is not None else []
+        ce_project = self.ce_zones_project
+        ce_zone_paths = [ce_project.source_path] if ce_project is not None else []
         definition_count = sum(len(values) for values in self.relation_definitions.values())
         if self.mission_workspace is not None:
             workspace = self.mission_workspace.root_path
@@ -22906,92 +23085,201 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             workspace = "Loose files"
         else:
             workspace = "No workspace loaded"
+        dirty_keys = set(self.dirty_source_keys_cache)
 
-        values = {
-            "workspace": workspace,
-            "entries": str(len(self.entries)),
-            "spawnable_entries": str(len(self.spawnable_entries)),
-            "random_preset_entries": str(len(self.random_preset_entries)),
-            "events": str(len(self.event_entries)),
-            "sources": f"{len(self.loaded_paths)} type, {len(spawnable_paths)} spawnabletype, {len(random_preset_paths)} randompreset, {len(event_paths)} events, {len(event_spawn_paths)} event spawns, {len(event_group_paths)} event groups, {len(environment_paths)} environment, {len(economycore_paths)} economy core, {len(mapgroupproto_paths)} mapgroupproto",
-            "configs": f"{len(self.config_paths)} mission, {len(self.profile_config_paths)} profile",
-            "definitions": f"{definition_count} value(s)",
-            "dirty": f"{len(dirty_type_paths)} type source(s), {len(dirty_spawnable_paths)} spawnabletype source(s), {len(dirty_random_preset_paths)} randompreset source(s), {len(dirty_event_paths)} event source(s), {len(dirty_environment_paths)} environment source(s), {len(dirty_territory_paths)} territory source(s), {len(dirty_economycore_paths)} economy core source(s), {len(dirty_mapgroupproto_paths)} mapgroupproto source(s), {len(dirty_config_paths)} config source(s), {len(dirty_profile_paths)} profile source(s), {'definitions dirty' if self.definitions_dirty else 'definitions clean'}",
-            "errors": f"Errors: {len(errors)}",
-            "warnings": f"Warnings: {len(warnings)}",
-            "hints": f"Hints: {len(infos)}",
-            "duplicates": f"Duplicate classnames: {len(duplicates)}",
-            "unknown_relations": f"Unknown relation names: {len(unknown_relations)}",
-        }
-        for key, value in values.items():
-            variable = self.dashboard_vars.get(key)
-            if variable is not None:
-                variable.set(value)
+        def dirty_paths(paths):
+            return [path for path in paths if self.normalized_path(path) in dirty_keys]
 
-        if self.dashboard_issue_listbox is None:
-            return
-        self.dashboard_issue_listbox.delete(0, "end")
-        self.dashboard_targets = {}
+        unsaved_records = []
+        seen_unsaved = set()
 
-        def add_dashboard_item(text, target=None):
-            index = self.dashboard_issue_listbox.size()
-            self.dashboard_issue_listbox.insert("end", text)
-            if target is not None:
-                self.dashboard_targets[index] = target
+        def add_unsaved(module, path, target):
+            key = (module, self.normalized_path(path) if path else str(target))
+            if key in seen_unsaved:
+                return
+            seen_unsaved.add(key)
+            unsaved_records.append((module, self.source_display_name(path) if path else module, target))
 
-        if dirty_paths:
-            add_dashboard_item(f"Unsaved sources: {len(dirty_paths)}")
-            for path in dirty_type_paths:
-                add_dashboard_item(f"  * {self.source_display_name(path)}", ("source", path))
-            for path in dirty_spawnable_paths:
-                add_dashboard_item(f"  * {self.source_display_name(path)}", ("spawnable_source", path))
-            for path in dirty_random_preset_paths:
-                add_dashboard_item(f"  * {self.source_display_name(path)}", ("random_preset_source", path))
-            for path in dirty_event_paths:
-                add_dashboard_item(f"  * {self.source_display_name(path)}", ("event_source", path))
-            for path in dirty_environment_paths:
-                add_dashboard_item(f"  * {self.source_display_name(path)}", ("module", "environment"))
-            for path in dirty_territory_paths:
-                add_dashboard_item(f"  * {self.source_display_name(path)}", ("territory_source", path))
-            for path in dirty_economycore_paths:
-                add_dashboard_item(f"  * {self.source_display_name(path)}", ("module", "economy_core"))
-            for path in dirty_mapgroupproto_paths:
-                add_dashboard_item(f"  * {self.source_display_name(path)}", ("module", "mapgroupproto"))
-            for path in dirty_config_paths:
-                add_dashboard_item(f"  * {self.source_display_name(path)}", ("config_source", path))
-            for path in dirty_profile_paths:
-                add_dashboard_item(f"  * {self.source_display_name(path)}", ("profile_source", path))
+        for path in dirty_paths(self.loaded_paths):
+            add_unsaved("Types", path, ("source", path))
+        for path in dirty_paths(spawnable_paths):
+            add_unsaved("Spawnabletypes", path, ("spawnable_source", path))
+        for path in dirty_paths(random_preset_paths):
+            add_unsaved("Randompresets", path, ("random_preset_source", path))
+        for path in dirty_paths(event_paths):
+            add_unsaved("Events", path, ("event_source", path))
+        for path in dirty_paths(event_spawn_paths + event_group_paths):
+            add_unsaved("Event System", path, ("module", "events"))
+        for path in dirty_paths(environment_paths):
+            add_unsaved("Environment", path, ("module", "environment"))
+        for path in dirty_paths(territory_paths):
+            add_unsaved("Territories", path, ("territory_source", path))
+        for path in dirty_paths(economycore_paths):
+            add_unsaved("Economy Core", path, ("module", "economy_core"))
+        for path in dirty_paths(mapgroupproto_paths):
+            add_unsaved("Mapgroupproto", path, ("module", "mapgroupproto"))
+        for path in dirty_paths(weather_paths):
+            add_unsaved("Weather", path, ("weather_source", path))
+        for path in dirty_paths(self.config_paths):
+            add_unsaved("Configs", path, ("config_source", path))
+        for path in dirty_paths(self.profile_config_paths):
+            add_unsaved("Profiles", path, ("profile_source", path))
         if self.definitions_dirty:
-            add_dashboard_item("Unsaved definition changes", ("module", "definitions"))
-        if duplicates:
-            add_dashboard_item(f"Duplicate classnames: {len(duplicates)}", ("duplicates",))
-            for name in sorted(duplicates, key=str.casefold):
-                add_dashboard_item(f"  ! {name}", ("duplicate", name))
+            add_unsaved("Definitions", self.definition_output_path(), ("module", "definitions"))
+        for layer_name in sorted(self.ce_zones_dirty_layers, key=str.casefold):
+            add_unsaved("CE Zones", layer_name, ("ce_zone_layer", layer_name, ce_project.source_path if ce_project is not None else ""))
+
+        map_text = self.selected_map_var.get().strip()
+        if map_text.casefold().startswith("map:"):
+            map_text = map_text.split(":", 1)[1].strip()
+        has_loaded_data = bool(self.mission_workspace is not None or self.loaded_paths or self.config_paths or self.profile_config_paths)
+        if not has_loaded_data:
+            validation_text = "Not available"
+        elif self.last_workspace_validation_at is None:
+            validation_text = "Not validated"
+        else:
+            stamp = self.last_workspace_validation_at.strftime("%H:%M") if self.last_workspace_validation_at.date() == datetime.now().date() else self.last_workspace_validation_at.strftime("%Y-%m-%d %H:%M")
+            validation_text = f"Stale - last {stamp}" if self.workspace_validation_stale else f"Validated {stamp}"
+        self.dashboard_vars["workspace"].set(workspace)
+        self.dashboard_vars["map"].set(map_text or "Not selected")
+        self.dashboard_vars["validation"].set(validation_text)
+        self.dashboard_vars["unsaved_summary"].set(f"{len(unsaved_records)} source(s)" if unsaved_records else "Clean")
+
         issue_groups = self.issue_groups_by_module(self.issues)
-        for module_id, module_issues in issue_groups.items():
-            counts = self.issue_counts_by_severity(module_issues)
-            parts = []
-            if counts["error"]:
-                parts.append(f"{counts['error']} error(s)")
-            if counts["warning"]:
-                parts.append(f"{counts['warning']} warning(s)")
-            if counts["info"]:
-                parts.append(f"{counts['info']} hint(s)")
-            add_dashboard_item(f"{self.issue_module_label(module_id)}: {', '.join(parts)}", self.issue_module_dashboard_target(module_id))
-            for severity_label, severity in (("Errors", "error"), ("Warnings", "warning"), ("Hints", "info")):
-                severity_issues = [issue for issue in module_issues if issue.severity == severity]
-                if not severity_issues:
-                    continue
-                add_dashboard_item(f"  {severity_label}: {len(severity_issues)}")
-                for issue in severity_issues:
-                    name = f"{issue.name}: " if issue.name else ""
-                    source = f" [{self.source_display_name(issue.source_path)}]" if issue.source_path else ""
-                    add_dashboard_item(f"    - {name}{issue.message}{source}", self.issue_target(issue))
-        if not self.dashboard_issue_listbox.size():
-            if self.entries or self.mission_workspace is not None or self.config_paths or self.profile_config_paths:
-                add_dashboard_item("No issues found. Workspace looks fine from current validation/analysis.")
-            else:
-                add_dashboard_item("No analysis report yet. Load a mission or supported files, then validate/analyze.")
+
+        def coverage_issues(module_id, paths):
+            path_keys = {self.normalized_path(path) for path in paths if path}
+            return [
+                issue
+                for issue in self.issues
+                if self.issue_module_id(issue) == module_id
+                and (not path_keys or not issue.source_path or self.normalized_path(issue.source_path) in path_keys)
+            ]
+
+        coverage_groups = (
+            ("Economy", (
+                ("types", "Types", self.loaded_paths, len(self.entries), "types", True, ("module", "types"), False),
+                ("spawnabletypes", "Spawnabletypes", spawnable_paths, len(self.spawnable_entries), "spawnabletypes", False, ("module", "spawnabletypes"), False),
+                ("randompresets", "Randompresets", random_preset_paths, len(self.random_preset_entries), "randompresets", False, ("module", "randompresets"), False),
+                ("definitions", "Definitions", definition_paths, definition_count, "definitions", True, ("module", "definitions"), self.definitions_dirty),
+                ("economy_core", "Economy Core", economycore_paths, "-", "economy_core", True, ("module", "economy_core"), False),
+            )),
+            ("Events", (
+                ("events", "Events", event_paths, len(self.event_entries), "events", True, ("module", "events"), False),
+                ("event_spawns", "Event Spawns", event_spawn_paths, sum(len(group.positions) for group in self.event_spawn_groups), "events", False, ("module", "events"), False),
+                ("event_groups", "Event Groups", event_group_paths, len(self.event_group_definitions), "events", False, ("module", "events"), False),
+                ("environment", "Environment", environment_paths, sum(1 for element in environment_root.iter() if isinstance(element.tag, str)) if environment_root is not None else 0, "environment", False, ("module", "environment"), False),
+                ("territories", "Territories", territory_paths, len(self.territory_zones), "territories", False, ("module", "territories"), False),
+            )),
+            ("World", (
+                ("mapgroupproto", "Mapgroupproto", mapgroupproto_paths, len(self.mapgroupproto_groups), "mapgroupproto", False, ("module", "mapgroupproto"), False),
+                ("mapgrouppos", "Mapgrouppos", mapgrouppos_paths, sum(group.placed_count for group in self.mapgroupproto_groups), "mapgroupproto", False, ("module", "mapgroupproto"), False),
+                ("ce_zones", "CE Zones", ce_zone_paths, len(ce_project.layers) if ce_project is not None else 0, "ce_zones", False, ("module", "ce_zones"), bool(self.ce_zones_dirty_layers)),
+                ("weather", "Weather", weather_paths, len(self.weather_values) if self.weather_path else 0, "weather", False, ("module", "weather"), False),
+            )),
+            ("Server", (
+                ("configs", "Configs", self.config_paths, "-", "configs", False, ("module", "configs"), False),
+                ("profiles", "Profiles", self.profile_config_paths, "-", "profiles", False, ("module", "profiles"), False),
+            )),
+        )
+
+        coverage_tree = self.dashboard_coverage_tree
+        self.dashboard_targets = {}
+        self.dashboard_missing_iids = []
+        missing_required_count = 0
+        if coverage_tree is not None:
+            children = coverage_tree.get_children()
+            if children:
+                coverage_tree.delete(*children)
+            state_rank = {"Errors": 0, "Missing required": 1, "Unsaved": 2, "Warnings": 3, "Ready": 4, "Optional": 5, "Not loaded": 6}
+            tag_by_state = {"Errors": "error", "Missing required": "missing", "Unsaved": "dirty", "Warnings": "warning", "Ready": "ready", "Optional": "optional", "Not loaded": "optional"}
+            for group_index, (group_label, rows) in enumerate(coverage_groups):
+                prepared = []
+                for row_id, label, paths, entry_count, module_id, required, target, special_dirty in rows:
+                    row_issues = coverage_issues(module_id, paths)
+                    counts = self.issue_counts_by_severity(row_issues)
+                    is_dirty = special_dirty or bool(dirty_paths(paths))
+                    available_paths = [path for path in paths if Path(path).is_file()]
+                    if not available_paths and is_dirty:
+                        state = "Unsaved"
+                    elif not available_paths:
+                        state = "Missing required" if required and self.mission_workspace is not None else "Optional" if self.mission_workspace is not None else "Not loaded"
+                    elif counts["error"]:
+                        state = "Errors"
+                    elif is_dirty:
+                        state = "Unsaved"
+                    elif counts["warning"]:
+                        state = "Warnings"
+                    else:
+                        state = "Ready"
+                    issue_text = "None" if not sum(counts.values()) else f"{counts['error']}E {counts['warning']}W {counts['info']}H"
+                    prepared.append((row_id, label, available_paths, entry_count, counts, state, target))
+                group_files = sum(len(row[2]) for row in prepared)
+                group_entries = sum(row[3] for row in prepared if isinstance(row[3], int))
+                group_counts = {severity: sum(row[4][severity] for row in prepared) for severity in ("error", "warning", "info")}
+                group_state = min((row[5] for row in prepared), key=lambda value: state_rank[value])
+                group_issue_text = "None" if not sum(group_counts.values()) else f"{group_counts['error']}E {group_counts['warning']}W {group_counts['info']}H"
+                group_iid = f"coverage-group-{group_index}"
+                coverage_tree.insert("", "end", iid=group_iid, text=group_label, values=(group_files, group_entries, group_issue_text, group_state), tags=(tag_by_state[group_state],), open=True)
+                for row_id, label, paths, entry_count, _counts, state, target in prepared:
+                    iid = f"coverage-{row_id}"
+                    coverage_tree.insert(group_iid, "end", iid=iid, text=label, values=(len(paths), entry_count, "None" if not sum(_counts.values()) else f"{_counts['error']}E {_counts['warning']}W {_counts['info']}H", state), tags=(tag_by_state[state],))
+                    self.dashboard_targets[iid] = target
+                    if state == "Missing required":
+                        self.dashboard_missing_iids.append(iid)
+                        missing_required_count += 1
+
+        health_values = {
+            "errors": ("Errors", len(errors), GRAPHITE_ERROR_DARK),
+            "warnings": ("Warnings", len(warnings), "#7f5f3a"),
+            "hints": ("Hints", len(infos), GRAPHITE_CARD_SOFT),
+            "dirty": ("Dirty files", len(unsaved_records), GRAPHITE_PREFLIGHT),
+            "missing": ("Missing required", missing_required_count, GRAPHITE_ERROR_DARK),
+        }
+        for key, (label, count, active_color) in health_values.items():
+            button = self.dashboard_health_buttons.get(key)
+            if button is not None:
+                color = active_color if count else GRAPHITE_CARD_SOFT
+                foreground = "#ffffff" if count and key in {"errors", "warnings", "dirty", "missing"} else GRAPHITE_TEXT
+                button.configure(text=f"{label}\n{count}", bg=color, fg=foreground, activebackground=color, activeforeground=foreground)
+
+        attention_tree = self.dashboard_attention_tree
+        if attention_tree is not None:
+            children = attention_tree.get_children()
+            if children:
+                attention_tree.delete(*children)
+            ordered_issues = sorted(self.issues, key=lambda issue: ({"error": 0, "warning": 1, "info": 2}.get(issue.severity, 3), self.issue_module_sort_key(self.issue_module_id(issue)), issue.name.casefold(), issue.message.casefold()))
+            visible_issues = ordered_issues[:8]
+            grouped_visible = self.issue_groups_by_module(visible_issues)
+            issue_index = 0
+            for group_index, (module_id, module_issues) in enumerate(grouped_visible.items()):
+                parent_iid = f"attention-group-{group_index}"
+                highest = min(module_issues, key=lambda issue: {"error": 0, "warning": 1, "info": 2}.get(issue.severity, 3)).severity
+                attention_tree.insert("", "end", iid=parent_iid, text=self.issue_module_label(module_id), values=("", f"{len(module_issues)} shown"), tags=(highest,), open=True)
+                self.dashboard_targets[parent_iid] = self.issue_module_dashboard_target(module_id)
+                for issue in module_issues:
+                    iid = f"attention-{issue_index}"
+                    item = issue.name or (self.source_display_name(issue.source_path) if issue.source_path else "Workspace")
+                    attention_tree.insert(parent_iid, "end", iid=iid, text=item, values=(issue.severity.title(), issue.message), tags=(issue.severity,))
+                    self.dashboard_targets[iid] = self.issue_target(issue)
+                    issue_index += 1
+            if len(ordered_issues) > len(visible_issues):
+                attention_tree.insert("", "end", iid="attention-more", text="More issues", values=("", f"{len(ordered_issues) - len(visible_issues)} additional issue(s)"), tags=("info",))
+            if not ordered_issues:
+                message = "No issues found in current validation." if has_loaded_data else "Load a mission or supported files to begin."
+                attention_tree.insert("", "end", iid="attention-empty", text="Workspace", values=("Ready" if has_loaded_data else "Idle", message), tags=("info",))
+
+        unsaved_tree = self.dashboard_unsaved_tree
+        if unsaved_tree is not None:
+            children = unsaved_tree.get_children()
+            if children:
+                unsaved_tree.delete(*children)
+            for index, (module, source, target) in enumerate(unsaved_records):
+                iid = f"unsaved-{index}"
+                unsaved_tree.insert("", "end", iid=iid, values=(module, source))
+                self.dashboard_targets[iid] = target
+            if not unsaved_records:
+                unsaved_tree.insert("", "end", iid="unsaved-clean", values=("Clean", "No unsaved changes"))
 
     def update_summary(self):
         duplicates = get_duplicate_groups(self.entries)
