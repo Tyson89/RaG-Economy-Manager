@@ -10,6 +10,7 @@ import copy
 import csv
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -33,7 +34,12 @@ except Exception:  # pragma: no cover - packaged builds should include pbo_core.
 
 
 NUMERIC_FIELDS = ("nominal", "lifetime", "restock", "min", "quantmin", "quantmax", "cost")
-EVENT_REPORT_FIELDS = ("nominal", "min", "max", "lifetime", "restock", "saferadius", "distanceradius", "cleanupradius", "position", "limit", "active")
+EVENT_REPORT_FIELDS = ("nominal", "min", "max", "lifetime", "restock", "saferadius", "distanceradius", "cleanupradius", "secondary", "deletable", "init_random", "remove_damaged", "position", "limit", "active", "children")
+EVENT_CHILD_ORDER = ("nominal", "min", "max", "lifetime", "restock", "saferadius", "distanceradius", "cleanupradius", "secondary", "flags", "position", "limit", "active", "children")
+EVENT_NUMERIC_FIELDS = ("nominal", "min", "max", "lifetime", "restock", "saferadius", "distanceradius", "cleanupradius")
+EVENT_FLAG_FIELDS = ("deletable", "init_random", "remove_damaged")
+EVENT_POSITION_VALUES = ("fixed", "player", "uniform")
+EVENT_LIMIT_VALUES = ("child", "parent", "mixed", "custom")
 TERRITORY_REPORT_FIELDS = ("name", "x", "z", "r", "dmin", "dmax")
 BULK_FIELDS = ("nominal", "min", "lifetime", "restock")
 CONFIG_TYPE_SECTIONS = ("CfgVehicles", "CfgWeapons", "CfgMagazines")
@@ -54,6 +60,7 @@ MISSION_SPAWNABLE_TYPES_FILENAME = "cfgspawnabletypes.xml"
 MISSION_RANDOM_PRESETS_FILENAME = "cfgrandompresets.xml"
 MISSION_EVENTS_FILENAME = "events.xml"
 MISSION_EVENT_SPAWNS_FILENAME = "cfgeventspawns.xml"
+MISSION_EVENT_GROUPS_FILENAME = "cfgeventgroups.xml"
 MISSION_LIMITS_FILENAME = "cfglimitsdefinition.xml"
 MISSION_ECONOMYCORE_FILENAME = "cfgeconomycore.xml"
 MISSION_ENVIRONMENT_FILENAME = "cfgenvironment.xml"
@@ -62,6 +69,7 @@ MISSION_MAPGROUPPROTO_FILENAME = "mapgroupproto.xml"
 MISSION_MAPGROUPPOS_FILENAME = "mapgrouppos.xml"
 MISSION_DB_DIRNAME = "db"
 MISSION_XML_SCAN_DIRS = (MISSION_DB_DIRNAME, "env", "events", "cfgeconomycore")
+IGNORED_STORAGE_DIRNAME = "storage_1"
 TERRITORY_FILENAME_SUFFIX = "_territories.xml"
 EVENT_TERRITORY_FILE_HINTS = {
     "animalbear": ("bear",),
@@ -77,8 +85,9 @@ EVENT_TERRITORY_FILE_HINTS = {
     "ambienthare": ("hare",),
     "ambienthen": ("hen",),
 }
+EVENT_PREFIX_FAMILIES = ("Ambient", "Animal", "Infected", "Item", "Static", "Trajectory", "Vehicle")
+SPECIAL_EVENT_NAMES = ("Loot",)
 EVENT_FAMILY_RULES = (
-    ("Loot", "Global loot economy", "global"),
     ("Ambient", "Ambient territory event", "environment"),
     ("Animal", "Animal territory event", "environment"),
     ("Infected", "Infected territory event", "environment"),
@@ -87,6 +96,72 @@ EVENT_FAMILY_RULES = (
     ("Static", "Static fixed-position event", "cfgeventspawns"),
     ("Item", "Item fixed-position event", "cfgeventspawns"),
 )
+ENVIRONMENT_ELEMENT_EXPLANATIONS = {
+    "env": "Root of cfgenvironment.xml.",
+    "territories": "Registers territory XML files and maps named environment populations to those files.",
+    "file": "At territories level, path loads an env territory XML file. Inside a territory, usable links that population to a registered file stem.",
+    "territory": "Defines one environment population, its behavior, linked territory files, agents, and runtime limits.",
+    "agent": "Weighted agent group used by an Ambient or custom environment population.",
+    "spawn": "Concrete animal, infected, or custom agent class that this agent group may spawn.",
+    "item": "Runtime setting for a territory or agent. Name selects the setting; val supplies its value.",
+}
+ENVIRONMENT_ATTRIBUTE_EXPLANATIONS = {
+    ("file", "path"): "Mission-relative path to an env/*_territories.xml file. This registers the file for use below.",
+    ("file", "usable"): "Registered territory file stem without path or .xml, for example red_deer_territories.",
+    ("territory", "type"): "Population controller type. Common values are Herd and Ambient.",
+    ("territory", "name"): "Environment population name used to connect Animal, Ambient, or Infected events to territory zones.",
+    ("territory", "behavior"): "DayZ AI group behavior class controlling this population.",
+    ("agent", "type"): "Logical agent variant, commonly Male or Female. Custom definitions may use other names.",
+    ("agent", "chance"): "Relative weight for choosing this agent variant.",
+    ("spawn", "configName"): "DayZ or modded agent class name to spawn. Agent classes generally begin with Animal_ or another registered AgentType class.",
+    ("spawn", "chance"): "Relative weight for choosing this concrete spawn class.",
+    ("item", "name"): "Environment runtime setting name, such as globalCountMax, zoneCountMin, countMin, or playerSpawnRadiusNear.",
+    ("item", "val"): "Value assigned to the named environment runtime setting.",
+}
+ENVIRONMENT_ITEM_EXPLANATIONS = {
+    "globalcountmax": "Maximum total agents from this population across the map.",
+    "zonecountmin": "Minimum agents created when a territory zone activates.",
+    "zonecountmax": "Maximum agents created when a territory zone activates.",
+    "playerspawnradiusnear": "Closest allowed spawn distance from a player, in meters.",
+    "playerspawnradiusfar": "Farthest spawn search distance from a player, in meters.",
+    "zonetouchdisableeditperiodsec": "Seconds a touched zone remains protected from population edits.",
+    "herdscount": "Number of herds of this population maintained on the map.",
+    "countmin": "Minimum count for this agent group.",
+    "countmax": "Maximum count for this agent group.",
+}
+
+
+def is_ignored_storage_path(path: str | os.PathLike[str]) -> bool:
+    try:
+        absolute = os.path.abspath(os.fspath(path))
+    except (TypeError, ValueError, OSError):
+        return False
+    if any(part.casefold() == IGNORED_STORAGE_DIRNAME for part in Path(absolute).parts):
+        return True
+    try:
+        resolved = os.path.realpath(absolute)
+    except OSError:
+        return False
+    return any(part.casefold() == IGNORED_STORAGE_DIRNAME for part in Path(resolved).parts)
+
+
+def ensure_not_ignored_storage_path(path: str | os.PathLike[str]) -> None:
+    if is_ignored_storage_path(path):
+        raise OSError(f"Access blocked: {IGNORED_STORAGE_DIRNAME} is always ignored.")
+
+
+def iter_files_ignoring_storage(root: str | os.PathLike[str]):
+    if is_ignored_storage_path(root):
+        return
+    for current_root, dirnames, filenames in os.walk(root, topdown=True):
+        dirnames[:] = [name for name in dirnames if name.casefold() != IGNORED_STORAGE_DIRNAME]
+        for filename in filenames:
+            yield Path(current_root) / filename
+
+
+def parse_xml_file(path: str | os.PathLike[str], parser: ET.XMLParser | None = None) -> ET.ElementTree:
+    ensure_not_ignored_storage_path(path)
+    return ET.parse(path, parser=parser)
 
 WEATHER_FIELD_DEFINITIONS = (
     ("reset", "Reset stored weather", "0/1. 1 ignores stored weather state and starts from this file."),
@@ -380,6 +455,24 @@ def order_type_entry_children(element: ET.Element) -> None:
     element[:] = ordered
 
 
+def order_event_entry_children(element: ET.Element) -> None:
+    children = list(element)
+    if not children:
+        return
+    indexed = list(enumerate(children))
+
+    def order_key(item: tuple[int, ET.Element]) -> tuple[int, int]:
+        index, child = item
+        try:
+            return (EVENT_CHILD_ORDER.index(str(child.tag)), index)
+        except ValueError:
+            return (len(EVENT_CHILD_ORDER), index)
+
+    ordered = [child for _index, child in sorted(indexed, key=order_key)]
+    if ordered != children:
+        element[:] = ordered
+
+
 @dataclass
 class TypeEntry:
     name: str
@@ -609,6 +702,7 @@ class MapGroupProtoPoint:
     height: str = ""
     flags: str = ""
     issue_count: int = 0
+    commented: bool = False
 
 
 @dataclass(frozen=True)
@@ -623,6 +717,7 @@ class MapGroupProtoContainer:
     matching_item_count: int = 0
     issue_count: int = 0
     points: tuple[MapGroupProtoPoint, ...] = ()
+    commented: bool = False
 
 
 @dataclass(frozen=True)
@@ -641,6 +736,7 @@ class MapGroupProtoGroup:
     issue_count: int = 0
     containers: tuple[MapGroupProtoContainer, ...] = ()
     xml: str = ""
+    commented: bool = False
 
 
 @dataclass
@@ -661,6 +757,36 @@ class EventEntry:
         if child is None:
             child = ET.SubElement(self.element, tag)
         child.text = str(value).strip()
+        order_event_entry_children(self.element)
+
+    def set_optional_child_text(self, tag: str, value: str) -> None:
+        clean = str(value).strip()
+        children = self.element.findall(tag)
+        if not clean:
+            for child in children:
+                self.element.remove(child)
+            return
+        self.set_child_text(tag, clean)
+
+    def flag_value(self, name: str, default: str = "") -> str:
+        flags = self.element.find("flags")
+        return flags.attrib.get(name, default).strip() if flags is not None else default
+
+    def set_flags(self, values: dict[str, str]) -> None:
+        clean = {name: str(values.get(name, "")).strip() for name in EVENT_FLAG_FIELDS}
+        flags = self.element.find("flags")
+        if not any(clean.values()):
+            if flags is not None:
+                self.element.remove(flags)
+            return
+        if flags is None:
+            flags = ET.SubElement(self.element, "flags")
+        for name, value in clean.items():
+            if value:
+                flags.attrib[name] = value
+            else:
+                flags.attrib.pop(name, None)
+        order_event_entry_children(self.element)
 
     def is_enabled(self) -> bool:
         return self.child_text("active", "1") != "0"
@@ -678,6 +804,39 @@ class EventEntry:
             source_path=self.source_path,
             source_index=self.source_index,
         )
+
+
+def create_event_entry(
+    name: str,
+    source_path: str,
+    source_index: int = 0,
+    field_values: dict[str, str] | None = None,
+    flag_values: dict[str, str] | None = None,
+    child_attributes: dict[str, str] | None = None,
+) -> EventEntry:
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        raise ValueError("Event name cannot be empty.")
+    entry = EventEntry(clean_name, ET.Element("event", {"name": clean_name}), str(source_path), int(source_index))
+    for field_name in EVENT_CHILD_ORDER:
+        if field_name in {"flags", "children"}:
+            continue
+        value = str((field_values or {}).get(field_name, "")).strip()
+        if value:
+            entry.set_child_text(field_name, value)
+    entry.set_flags(flag_values or {})
+    children = ET.SubElement(entry.element, "children")
+    child_type = str((child_attributes or {}).get("type", "")).strip()
+    if child_type:
+        attributes = {
+            field_name: str((child_attributes or {}).get(field_name, "")).strip()
+            for field_name in ("lootmax", "lootmin", "max", "min", "type")
+            if str((child_attributes or {}).get(field_name, "")).strip()
+        }
+        attributes["type"] = child_type
+        ET.SubElement(children, "child", attributes)
+    order_event_entry_children(entry.element)
+    return entry
 
 
 @dataclass
@@ -809,11 +968,21 @@ class RandomPresetEntry:
 
 
 @dataclass
+class EventSpawnZone:
+    attributes: dict[str, str]
+    element: ET.Element
+
+    def clone(self) -> "EventSpawnZone":
+        return EventSpawnZone(dict(self.attributes), copy.deepcopy(self.element))
+
+
+@dataclass
 class EventSpawnPosition:
     event_name: str
     attributes: dict[str, str]
     source_path: str
     source_index: int
+    element: ET.Element | None = None
 
     def coordinate_preview(self) -> str:
         parts = []
@@ -821,7 +990,30 @@ class EventSpawnPosition:
             value = self.attributes.get(key)
             if value is not None:
                 parts.append(f"{key}={value}")
+        group = self.attributes.get("group", "").strip()
+        if group:
+            parts.append(f"group={group}")
         return ", ".join(parts)
+
+    def set_attribute(self, key: str, value: str) -> None:
+        clean = str(value).strip()
+        if clean:
+            self.attributes[key] = clean
+            if self.element is not None:
+                self.element.attrib[key] = clean
+        else:
+            self.attributes.pop(key, None)
+            if self.element is not None:
+                self.element.attrib.pop(key, None)
+
+    def clone(self) -> "EventSpawnPosition":
+        return EventSpawnPosition(
+            self.event_name,
+            dict(self.attributes),
+            self.source_path,
+            self.source_index,
+            copy.deepcopy(self.element) if self.element is not None else None,
+        )
 
 
 @dataclass
@@ -978,13 +1170,74 @@ class EventSpawnGroup:
     element: ET.Element
     source_path: str
     source_index: int
+    zone: EventSpawnZone | None = None
+
+    def clone(self) -> "EventSpawnGroup":
+        return EventSpawnGroup(
+            self.name,
+            [position.clone() for position in self.positions],
+            copy.deepcopy(self.element),
+            self.source_path,
+            self.source_index,
+            self.zone.clone() if self.zone is not None else None,
+        )
+
+    def grouped_position_count(self) -> int:
+        return sum(1 for position in self.positions if position.attributes.get("group", "").strip())
+
+
+@dataclass
+class EventGroupChild:
+    type_name: str
+    attributes: dict[str, str]
+    element: ET.Element
+
+    def set_attribute(self, key: str, value: str) -> None:
+        clean = str(value).strip()
+        if clean:
+            self.attributes[key] = clean
+            self.element.attrib[key] = clean
+        else:
+            self.attributes.pop(key, None)
+            self.element.attrib.pop(key, None)
+        if key == "type":
+            self.type_name = clean
+
+    def clone(self) -> "EventGroupChild":
+        return EventGroupChild(self.type_name, dict(self.attributes), copy.deepcopy(self.element))
+
+
+@dataclass
+class EventGroupDefinition:
+    name: str
+    children: list[EventGroupChild]
+    element: ET.Element
+    source_path: str
+    source_index: int
+
+    def clone(self) -> "EventGroupDefinition":
+        return EventGroupDefinition(
+            self.name,
+            [child.clone() for child in self.children],
+            copy.deepcopy(self.element),
+            self.source_path,
+            self.source_index,
+        )
+
+    def max_offset_radius(self) -> float:
+        radii = []
+        for child in self.children:
+            try:
+                radii.append(math.hypot(float(child.attributes.get("x", "0")), float(child.attributes.get("z", "0"))))
+            except ValueError:
+                continue
+        return max(radii, default=0.0)
 
 
 @dataclass(frozen=True)
-class EventChildLink:
+class EventSecondaryLink:
     parent_name: str
-    child_name: str
-    attributes: dict[str, str]
+    secondary_name: str
     parent_source_path: str
     parent_enabled: bool
 
@@ -1316,6 +1569,7 @@ class MissionWorkspace:
     random_preset_paths: list[str]
     event_paths: list[str]
     event_spawn_paths: list[str]
+    event_group_paths: list[str]
     territory_paths: list[str]
     cfgenvironment_paths: list[str]
     environment_territory_paths: dict[str, list[str]]
@@ -1333,7 +1587,8 @@ def parse_types_file(path: str | os.PathLike[str], source_index: int = 0) -> tup
     issues: list[ValidationIssue] = []
 
     try:
-        tree = ET.parse(path)
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        tree = parse_xml_file(path, parser=parser)
     except ET.ParseError as exc:
         return [], [create_xml_parse_issue(path, exc)]
     except OSError as exc:
@@ -1363,7 +1618,7 @@ def parse_spawnable_types_file(path: str | os.PathLike[str], source_index: int =
     issues: list[ValidationIssue] = []
 
     try:
-        tree = ET.parse(path)
+        tree = parse_xml_file(path)
     except ET.ParseError as exc:
         return [], [create_xml_parse_issue(path, exc)]
     except OSError as exc:
@@ -1392,7 +1647,7 @@ def parse_random_presets_file(path: str | os.PathLike[str], source_index: int = 
     issues: list[ValidationIssue] = []
 
     try:
-        tree = ET.parse(path)
+        tree = parse_xml_file(path)
     except ET.ParseError as exc:
         return [], [create_xml_parse_issue(path, exc)]
     except OSError as exc:
@@ -1441,7 +1696,8 @@ def parse_events_file(path: str | os.PathLike[str], source_index: int = 0) -> tu
     issues: list[ValidationIssue] = []
 
     try:
-        tree = ET.parse(path)
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        tree = parse_xml_file(path, parser=parser)
     except ET.ParseError as exc:
         return [], [create_xml_parse_issue(path, exc)]
     except OSError as exc:
@@ -1462,6 +1718,8 @@ def parse_events_file(path: str | os.PathLike[str], source_index: int = 0) -> tu
     if not entries and root.tag == "events":
         issues.append(ValidationIssue("warning", "", "No <event> entries found.", path, "Check that you loaded the intended events.xml file."))
 
+    issues.extend(validate_event_entries(entries, check_references=False))
+
     return entries, issues
 
 
@@ -1470,7 +1728,8 @@ def parse_event_spawns_file(path: str | os.PathLike[str], source_index: int = 0)
     issues: list[ValidationIssue] = []
 
     try:
-        tree = ET.parse(path)
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        tree = parse_xml_file(path, parser=parser)
     except ET.ParseError as exc:
         return [], [create_xml_parse_issue(path, exc)]
     except OSError as exc:
@@ -1481,21 +1740,69 @@ def parse_event_spawns_file(path: str | os.PathLike[str], source_index: int = 0)
         issues.append(ValidationIssue("error", "", f"Expected root <eventposdef>, got <{root.tag}>", path, "This file does not match cfgeventspawns.xml. Load a DayZ event position definition file."))
 
     groups: list[EventSpawnGroup] = []
+    name_counts: Counter = Counter()
     for index, element in enumerate(root.findall("event")):
         name = element.attrib.get("name", "").strip()
         if not name:
             name = f"<missing spawn event name #{index + 1}>"
             issues.append(ValidationIssue("error", name, "Event spawn entry is missing the name attribute.", path, "Add an event name, for example <event name=\"StaticHeliCrash\">."))
-        positions = [
-            EventSpawnPosition(
-                event_name=name,
-                attributes={str(key): str(value) for key, value in position.attrib.items()},
-                source_path=path,
-                source_index=source_index,
-            )
-            for position in element.findall("pos")
-        ]
-        groups.append(EventSpawnGroup(name=name, positions=positions, element=copy.deepcopy(element), source_path=path, source_index=source_index))
+        else:
+            name_counts[name.casefold()] += 1
+
+        zone_element = element.find("zone")
+        zone = None
+        if zone_element is not None:
+            zone_attributes = {str(key): str(value) for key, value in zone_element.attrib.items()}
+            zone = EventSpawnZone(zone_attributes, copy.deepcopy(zone_element))
+            zone_values: dict[str, float] = {}
+            for field_name in ("smin", "smax", "dmin", "dmax", "r"):
+                raw = zone_attributes.get(field_name, "").strip()
+                if not raw:
+                    continue
+                try:
+                    value = float(raw)
+                    if not math.isfinite(value) or value < 0:
+                        raise ValueError
+                except ValueError:
+                    issues.append(ValidationIssue("error", name, f"Event spawn zone {field_name} must be a non-negative number, got {raw!r}.", path, "Use zero or a positive number."))
+                    continue
+                zone_values[field_name] = value
+            for minimum_name, maximum_name in (("smin", "smax"), ("dmin", "dmax")):
+                if minimum_name in zone_values and maximum_name in zone_values and zone_values[minimum_name] > zone_values[maximum_name]:
+                    issues.append(ValidationIssue("error", name, f"Event spawn zone {minimum_name} exceeds {maximum_name}.", path, f"Set {minimum_name} less than or equal to {maximum_name}."))
+            if zone_values.get("r") == 0 and any(zone_values.get(field_name, 0) > 0 for field_name in ("smin", "smax", "dmin", "dmax")):
+                issues.append(ValidationIssue("warning", name, "Event spawn zone has radius 0 with non-zero population counts.", path, "Verify the zone radius; zero can prevent the generated zone from covering a useful area."))
+
+        positions: list[EventSpawnPosition] = []
+        for position_index, position in enumerate(element.findall("pos")):
+            attributes = {str(key): str(value) for key, value in position.attrib.items()}
+            for field_name in ("x", "z"):
+                raw = attributes.get(field_name, "").strip()
+                if not raw:
+                    issues.append(ValidationIssue("error", name, f"Spawn position #{position_index + 1} is missing required {field_name}.", path, "Set both x and z world coordinates."))
+                    continue
+                try:
+                    value = float(raw)
+                    if not math.isfinite(value):
+                        raise ValueError
+                except ValueError:
+                    issues.append(ValidationIssue("error", name, f"Spawn position #{position_index + 1} has invalid {field_name}: {raw!r}.", path, "Use a finite numeric coordinate."))
+            for field_name in ("y", "a"):
+                raw = attributes.get(field_name, "").strip()
+                if not raw:
+                    continue
+                try:
+                    value = float(raw)
+                    if not math.isfinite(value):
+                        raise ValueError
+                except ValueError:
+                    issues.append(ValidationIssue("error", name, f"Spawn position #{position_index + 1} has invalid {field_name}: {raw!r}.", path, "Use a finite number or omit the optional attribute."))
+            positions.append(EventSpawnPosition(name, attributes, path, source_index, copy.deepcopy(position)))
+        groups.append(EventSpawnGroup(name, positions, copy.deepcopy(element), path, source_index, zone))
+
+    for group in groups:
+        if not group.name.startswith("<missing ") and name_counts[group.name.casefold()] > 1:
+            issues.append(ValidationIssue("warning", group.name, "Event spawn name is defined more than once.", path, "Keep one definition unless multiple physical sources intentionally contribute positions."))
 
     if not groups and root.tag == "eventposdef":
         issues.append(ValidationIssue("warning", "", "No <event> spawn entries found.", path, "Check that you loaded the intended cfgeventspawns.xml file."))
@@ -1503,11 +1810,102 @@ def parse_event_spawns_file(path: str | os.PathLike[str], source_index: int = 0)
     return groups, issues
 
 
+def parse_event_groups_file(
+    path: str | os.PathLike[str],
+    source_index: int = 0,
+    known_classnames: Iterable[str] = (),
+) -> tuple[list[EventGroupDefinition], list[ValidationIssue]]:
+    path = str(path)
+    issues: list[ValidationIssue] = []
+    try:
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        tree = parse_xml_file(path, parser=parser)
+    except ET.ParseError as exc:
+        return [], [create_xml_parse_issue(path, exc)]
+    except OSError as exc:
+        return [], [ValidationIssue("error", "", f"Could not read file: {exc}", path, "Check that the file exists and can be read.")]
+
+    root = tree.getroot()
+    if root.tag != "eventgroupdef":
+        issues.append(ValidationIssue("error", "", f"Expected root <eventgroupdef>, got <{root.tag}>", path, "This file does not match cfgeventgroups.xml."))
+
+    known = {str(name).casefold() for name in known_classnames if str(name).strip()}
+    name_counts: Counter = Counter()
+    groups: list[EventGroupDefinition] = []
+    for group_index, element in enumerate(root.findall("group")):
+        name = element.attrib.get("name", "").strip()
+        if not name:
+            name = f"<missing event group name #{group_index + 1}>"
+            issues.append(ValidationIssue("error", name, "Event group is missing its name attribute.", path, "Add a unique group name."))
+        else:
+            name_counts[name.casefold()] += 1
+        children: list[EventGroupChild] = []
+        for child_index, child_element in enumerate(element.findall("child")):
+            attributes = {str(key): str(value) for key, value in child_element.attrib.items()}
+            type_name = attributes.get("type", "").strip()
+            label = type_name or f"child #{child_index + 1}"
+            if not type_name:
+                issues.append(ValidationIssue("error", name, f"Event group {label} is missing its type classname.", path, "Set type to the entity classname."))
+            elif known and type_name.casefold() not in known:
+                issues.append(ValidationIssue("warning", name, f"Event group child classname is not loaded: {type_name}.", path, "Keep it if a mod supplies this class; otherwise correct the classname."))
+            for field_name in ("x", "z"):
+                raw = attributes.get(field_name, "").strip()
+                if not raw:
+                    issues.append(ValidationIssue("error", name, f"Event group {label} is missing required {field_name} offset.", path, "Set both x and z relative offsets."))
+                    continue
+                try:
+                    value = float(raw)
+                    if not math.isfinite(value):
+                        raise ValueError
+                except ValueError:
+                    issues.append(ValidationIssue("error", name, f"Event group {label} has invalid {field_name}: {raw!r}.", path, "Use a finite numeric offset."))
+            for field_name in ("y", "a"):
+                raw = attributes.get(field_name, "").strip()
+                if not raw:
+                    continue
+                try:
+                    value = float(raw)
+                    if not math.isfinite(value):
+                        raise ValueError
+                except ValueError:
+                    issues.append(ValidationIssue("error", name, f"Event group {label} has invalid {field_name}: {raw!r}.", path, "Use a finite number or omit the optional attribute."))
+            loot_values: dict[str, int] = {}
+            for field_name in ("lootmin", "lootmax"):
+                raw = attributes.get(field_name, "").strip()
+                if not raw:
+                    continue
+                try:
+                    value = int(raw)
+                    if value < 0:
+                        raise ValueError
+                except ValueError:
+                    issues.append(ValidationIssue("error", name, f"Event group {label} {field_name} must be a non-negative integer, got {raw!r}.", path, "Use zero or a positive integer."))
+                    continue
+                loot_values[field_name] = value
+            if loot_values.get("lootmin", 0) > loot_values.get("lootmax", loot_values.get("lootmin", 0)):
+                issues.append(ValidationIssue("error", name, f"Event group {label} lootmin exceeds lootmax.", path, "Set lootmin less than or equal to lootmax."))
+            deloot = attributes.get("deloot", "").strip()
+            if deloot and deloot not in {"0", "1"}:
+                issues.append(ValidationIssue("error", name, f"Event group {label} deloot must be 0 or 1, got {deloot!r}.", path, "Use 0, 1, or omit the attribute."))
+            spawnsecondary = attributes.get("spawnsecondary", "").strip().casefold()
+            if spawnsecondary and spawnsecondary not in {"true", "false", "0", "1"}:
+                issues.append(ValidationIssue("warning", name, f"Event group {label} has unknown spawnsecondary value: {spawnsecondary!r}.", path, "Use true/false, 0/1, or omit the attribute."))
+            children.append(EventGroupChild(type_name, attributes, copy.deepcopy(child_element)))
+        groups.append(EventGroupDefinition(name, children, copy.deepcopy(element), path, source_index))
+
+    for group in groups:
+        if not group.name.startswith("<missing ") and name_counts[group.name.casefold()] > 1:
+            issues.append(ValidationIssue("error", group.name, "Event group name is defined more than once.", path, "Rename or remove duplicate group definitions so references are unambiguous."))
+    if not groups and root.tag == "eventgroupdef":
+        issues.append(ValidationIssue("warning", "", "No <group> entries found.", path, "Empty cfgeventgroups.xml is valid but provides no grouped layouts."))
+    return groups, issues
+
+
 def parse_territory_file(path: str | os.PathLike[str], source_index: int = 0) -> tuple[list[TerritoryZone], list[ValidationIssue]]:
     path = str(path)
     issues: list[ValidationIssue] = []
     try:
-        tree = ET.parse(path)
+        tree = parse_xml_file(path)
     except ET.ParseError as exc:
         return [], [create_xml_parse_issue(path, exc)]
     except OSError as exc:
@@ -1563,7 +1961,7 @@ def parse_territory_file(path: str | os.PathLike[str], source_index: int = 0) ->
 def parse_territory_groups_file(path: str | os.PathLike[str], source_index: int = 0) -> tuple[list[TerritoryGroup], list[ValidationIssue]]:
     path = str(path)
     try:
-        tree = ET.parse(path)
+        tree = parse_xml_file(path)
     except ET.ParseError as exc:
         return [], [create_xml_parse_issue(path, exc)]
     except OSError as exc:
@@ -1792,6 +2190,7 @@ def encode_areaflags_map(area_map: AreaFlagsMap) -> bytes:
 
 def parse_areaflags_map(path: str | os.PathLike[str]) -> AreaFlagsMap:
     source_path = str(path)
+    ensure_not_ignored_storage_path(path)
     data = Path(path).read_bytes()
     if len(data) < 24:
         raise ValueError("areaflags.map is too small to contain a valid header.")
@@ -1821,7 +2220,7 @@ def parse_ce_zones_project(path: str | os.PathLike[str]) -> CEZoneProject:
     path = str(path)
     issues: list[ValidationIssue] = []
     try:
-        tree = ET.parse(path)
+        tree = parse_xml_file(path)
     except ET.ParseError as exc:
         return CEZoneProject(path, "", 0, 0, [], [], [], [create_xml_parse_issue(path, exc)])
     except OSError as exc:
@@ -1886,24 +2285,15 @@ def event_spawn_positions_by_name(spawn_groups: Iterable[EventSpawnGroup]) -> di
     return result
 
 
-def event_child_links(events: Iterable[EventEntry]) -> list[EventChildLink]:
-    links: list[EventChildLink] = []
+def event_secondary_links(events: Iterable[EventEntry]) -> list[EventSecondaryLink]:
+    links: list[EventSecondaryLink] = []
     for entry in events:
-        for child in entry.element.findall(".//child"):
-            child_name = ""
-            for key in ("type", "name", "event"):
-                child_name = child.attrib.get(key, "").strip()
-                if child_name:
-                    break
-            if not child_name and child.text:
-                child_name = child.text.strip()
-            if not child_name:
-                continue
+        secondary_name = entry.child_text("secondary")
+        if secondary_name:
             links.append(
-                EventChildLink(
+                EventSecondaryLink(
                     parent_name=entry.name,
-                    child_name=child_name,
-                    attributes={str(key): str(value) for key, value in child.attrib.items()},
+                    secondary_name=secondary_name,
                     parent_source_path=entry.source_path,
                     parent_enabled=entry.is_enabled(),
                 )
@@ -1911,17 +2301,17 @@ def event_child_links(events: Iterable[EventEntry]) -> list[EventChildLink]:
     return links
 
 
-def event_child_links_by_parent(events: Iterable[EventEntry]) -> dict[str, list[EventChildLink]]:
-    result: dict[str, list[EventChildLink]] = {}
-    for link in event_child_links(events):
+def event_secondary_links_by_parent(events: Iterable[EventEntry]) -> dict[str, list[EventSecondaryLink]]:
+    result: dict[str, list[EventSecondaryLink]] = {}
+    for link in event_secondary_links(events):
         result.setdefault(link.parent_name.casefold(), []).append(link)
     return result
 
 
-def event_child_links_by_child(events: Iterable[EventEntry]) -> dict[str, list[EventChildLink]]:
-    result: dict[str, list[EventChildLink]] = {}
-    for link in event_child_links(events):
-        result.setdefault(link.child_name.casefold(), []).append(link)
+def event_secondary_links_by_secondary(events: Iterable[EventEntry]) -> dict[str, list[EventSecondaryLink]]:
+    result: dict[str, list[EventSecondaryLink]] = {}
+    for link in event_secondary_links(events):
+        result.setdefault(link.secondary_name.casefold(), []).append(link)
     return result
 
 
@@ -1941,23 +2331,32 @@ def normalize_territory_usable(value: str) -> str:
     return clean
 
 
-def parse_cfgenvironment_file(path: str | os.PathLike[str], mission_root: str | os.PathLike[str]) -> tuple[list[str], dict[str, list[str]], list[ValidationIssue]]:
+def parse_cfgenvironment_document(path: str | os.PathLike[str]) -> tuple[ET.Element | None, list[ValidationIssue]]:
     path = str(path)
-    root_path = Path(mission_root)
     issues: list[ValidationIssue] = []
     try:
-        tree = ET.parse(path)
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        tree = parse_xml_file(path, parser=parser)
     except ET.ParseError as exc:
-        return [], {}, [create_xml_parse_issue(path, exc)]
+        return None, [create_xml_parse_issue(path, exc)]
     except OSError as exc:
-        return [], {}, [ValidationIssue("error", "", f"Could not read file: {exc}", path, "Check that the file exists, is not locked by another program, and that you have permission to read it.")]
+        return None, [ValidationIssue("error", "", f"Could not read file: {exc}", path, "Check that the file exists, is not locked by another program, and that you have permission to read it.")]
 
     root = tree.getroot()
     if root.tag != "env":
         issues.append(ValidationIssue("error", "", f"Expected root <env>, got <{root.tag}>", path, "This file does not match DayZ cfgenvironment.xml. Load the mission root containing cfgenvironment.xml."))
+    return root, issues
+
+
+def environment_links_from_root(root: ET.Element | None, mission_root: str | os.PathLike[str], source_path: str = "") -> tuple[list[str], dict[str, list[str]], list[ValidationIssue]]:
+    root_path = Path(mission_root)
+    issues: list[ValidationIssue] = []
+    if root is None:
+        return [], {}, issues
 
     territory_root = root.find("territories")
     if territory_root is None:
+        issues.append(ValidationIssue("warning", "", "cfgenvironment.xml has no <territories> section.", source_path, "Add a <territories> section before registering environment territory files."))
         return [], {}, issues
 
     usable_paths: dict[str, str] = {}
@@ -1965,9 +2364,14 @@ def parse_cfgenvironment_file(path: str | os.PathLike[str], mission_root: str | 
     for file_element in territory_root.findall("file"):
         file_path = file_element.attrib.get("path", "").strip()
         if not file_path:
+            issues.append(ValidationIssue("warning", "", "Environment territory file entry is missing path.", source_path, "Set path to an env/*_territories.xml file or remove the incomplete entry."))
             continue
         resolved = root_path / file_path.replace("\\", os.sep).replace("/", os.sep)
+        if is_ignored_storage_path(resolved):
+            continue
         usable = normalize_territory_usable(file_path)
+        if usable in usable_paths:
+            issues.append(ValidationIssue("warning", usable, "Environment territory file is registered more than once.", source_path, "Keep one top-level <file path=\"...\" /> registration for each territory file."))
         usable_paths[usable] = str(resolved)
         territory_paths.append(str(resolved))
 
@@ -1975,19 +2379,47 @@ def parse_cfgenvironment_file(path: str | os.PathLike[str], mission_root: str | 
     for territory in territory_root.findall("territory"):
         territory_name = territory.attrib.get("name", "").strip()
         if not territory_name:
+            issues.append(ValidationIssue("warning", "", "Environment territory definition is missing name.", source_path, "Set name so events can resolve this environment population."))
             continue
         mapped_paths: list[str] = []
         for file_element in territory.findall("file"):
             usable = normalize_territory_usable(file_element.attrib.get("usable", ""))
             if not usable:
+                issues.append(ValidationIssue("warning", territory_name, "Environment territory file link is missing usable.", source_path, "Set usable to a registered territory filename without path or .xml."))
                 continue
             resolved = usable_paths.get(usable, str(root_path / "env" / f"{usable}.xml"))
+            if is_ignored_storage_path(resolved):
+                continue
+            if usable not in usable_paths:
+                issues.append(ValidationIssue("warning", territory_name, f"Environment territory uses unregistered file: {usable}.", source_path, "Add a top-level <file path=\"env/..._territories.xml\" /> entry with the same file stem."))
             mapped_paths.append(resolved)
             territory_paths.append(resolved)
         if mapped_paths:
             territory_map[territory_name.casefold()] = dedupe_paths(mapped_paths)
 
     return dedupe_paths(territory_paths), territory_map, issues
+
+
+def parse_cfgenvironment_file(path: str | os.PathLike[str], mission_root: str | os.PathLike[str]) -> tuple[list[str], dict[str, list[str]], list[ValidationIssue]]:
+    path = str(path)
+    root, issues = parse_cfgenvironment_document(path)
+    territory_paths, territory_map, link_issues = environment_links_from_root(root, mission_root, path)
+    return territory_paths, territory_map, issues + link_issues
+
+
+def format_cfgenvironment_xml(root: ET.Element) -> str:
+    element = copy.deepcopy(root)
+    indent_xml(element)
+    body = ET.tostring(element, encoding="unicode", short_empty_elements=True)
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n' + body + "\n"
+
+
+def write_cfgenvironment_file(root: ET.Element, output_path: str | os.PathLike[str]) -> int:
+    ensure_not_ignored_storage_path(output_path)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(format_cfgenvironment_xml(root), encoding="utf-8")
+    return sum(1 for element in root.iter() if isinstance(element.tag, str))
 
 
 @lru_cache(maxsize=8192)
@@ -2059,10 +2491,78 @@ def territory_zones_for_event(event: EventEntry, zones: Iterable[TerritoryZone],
 
 def classify_event_name(name: str) -> tuple[str, str, str]:
     clean_name = str(name or "").strip()
+    if clean_name == "Loot":
+        return "Loot", "Special global loot event", "global"
     for prefix, label, link_target in EVENT_FAMILY_RULES:
-        if clean_name == prefix or clean_name.startswith(prefix):
+        if clean_name.startswith(prefix):
             return prefix, label, link_target
-    return "Unknown", "Unknown event family", "unknown"
+    return "Custom", "Custom or modded event", "unknown"
+
+
+def validate_event_entries(events: Iterable[EventEntry], check_references: bool = True) -> list[ValidationIssue]:
+    event_list = list(events)
+    event_names = {event.name.casefold() for event in event_list if not event.name.startswith("<missing ")}
+    name_counts = Counter(event.name.casefold() for event in event_list if not event.name.startswith("<missing "))
+    issues: list[ValidationIssue] = []
+
+    for event in event_list:
+        if event.name.startswith("<missing "):
+            continue
+        if name_counts[event.name.casefold()] > 1:
+            issues.append(ValidationIssue("warning", event.name, "Event name is defined more than once.", event.source_path, "Keep one definition unless separate cfgeconomycore.xml files intentionally override or extend this event."))
+
+        for field_name in EVENT_NUMERIC_FIELDS:
+            raw = event.child_text(field_name)
+            if not raw:
+                continue
+            try:
+                value = int(raw)
+            except ValueError:
+                issues.append(ValidationIssue("error", event.name, f"<{field_name}> must be an integer, got {raw!r}.", event.source_path, "Use a non-negative integer."))
+                continue
+            if value < 0:
+                issues.append(ValidationIssue("error", event.name, f"<{field_name}> must be non-negative, got {value}.", event.source_path, "Use zero or a positive integer."))
+
+        position = event.child_text("position")
+        if position and position not in EVENT_POSITION_VALUES:
+            issues.append(ValidationIssue("warning", event.name, f"Unknown event position mode: {position}.", event.source_path, "Vanilla modes are fixed, player, and uniform. Keep a custom value only when required by a mod."))
+        limit = event.child_text("limit")
+        if limit and limit not in EVENT_LIMIT_VALUES:
+            issues.append(ValidationIssue("warning", event.name, f"Unknown event limit mode: {limit}.", event.source_path, "Vanilla modes are child, parent, mixed, and custom. Keep a custom value only when required by a mod."))
+        active = event.child_text("active")
+        if active and active not in {"0", "1"}:
+            issues.append(ValidationIssue("error", event.name, f"<active> must be 0 or 1, got {active!r}.", event.source_path, "Use 1 to enable the event or 0 to disable it. nominal=0 is not an enable switch."))
+
+        secondary = event.child_text("secondary")
+        if check_references and secondary and secondary.casefold() not in event_names:
+            issues.append(ValidationIssue("warning", event.name, f"Secondary event is not defined: {secondary}.", event.source_path, "Add an event with that exact name or correct/remove <secondary>."))
+
+        flags = event.element.find("flags")
+        if flags is not None:
+            for flag_name in EVENT_FLAG_FIELDS:
+                raw = flags.attrib.get(flag_name, "").strip()
+                if not raw:
+                    issues.append(ValidationIssue("warning", event.name, f"<flags> is missing {flag_name}.", event.source_path, f"Add {flag_name}=\"0\" or {flag_name}=\"1\"."))
+                elif raw not in {"0", "1"}:
+                    issues.append(ValidationIssue("error", event.name, f"<flags {flag_name}> must be 0 or 1, got {raw!r}.", event.source_path, f"Change {flag_name} to 0 or 1."))
+
+        for child in event.element.findall("./children/child"):
+            child_type = child.attrib.get("type", "").strip()
+            if not child_type:
+                issues.append(ValidationIssue("error", event.name, "Event child is missing its type classname.", event.source_path, "Set child type to the entity classname spawned by this event."))
+            for field_name in ("min", "max", "lootmin", "lootmax"):
+                raw = child.attrib.get(field_name, "").strip()
+                if not raw:
+                    continue
+                try:
+                    value = int(raw)
+                except ValueError:
+                    issues.append(ValidationIssue("error", event.name, f"Child {child_type or '<missing type>'} {field_name} must be an integer, got {raw!r}.", event.source_path, "Use a non-negative integer."))
+                    continue
+                if value < 0:
+                    issues.append(ValidationIssue("error", event.name, f"Child {child_type or '<missing type>'} {field_name} must be non-negative, got {value}.", event.source_path, "Use zero or a positive integer."))
+
+    return issues
 
 
 def validate_event_spawn_links(
@@ -2070,15 +2570,25 @@ def validate_event_spawn_links(
     spawn_groups: Iterable[EventSpawnGroup],
     territory_zones: Iterable[TerritoryZone] | None = None,
     environment_territory_paths: dict[str, list[str]] | None = None,
+    event_groups: Iterable[EventGroupDefinition] = (),
 ) -> list[ValidationIssue]:
     event_list = list(events)
-    group_list = list(spawn_groups)
+    spawn_group_list = list(spawn_groups)
+    event_group_list = list(event_groups)
     zone_list = list(territory_zones) if territory_zones is not None else None
     environment_map = environment_territory_paths or {}
     event_names = {event.name.casefold(): event for event in event_list}
-    positions_by_name = event_spawn_positions_by_name(group_list)
-    child_links_by_child = event_child_links_by_child(event_list)
+    positions_by_name = event_spawn_positions_by_name(spawn_group_list)
+    spawn_names = {group.name.casefold() for group in spawn_group_list if not group.name.startswith("<missing ")}
+    event_group_names = {group.name.casefold() for group in event_group_list if not group.name.startswith("<missing ")}
+    event_group_name_counts = Counter(group.name.casefold() for group in event_group_list if not group.name.startswith("<missing "))
+    referenced_group_names: set[str] = set()
+    secondary_links_by_secondary = event_secondary_links_by_secondary(event_list)
     issues: list[ValidationIssue] = []
+
+    for event_group in event_group_list:
+        if not event_group.name.startswith("<missing ") and event_group_name_counts[event_group.name.casefold()] > 1:
+            issues.append(ValidationIssue("error", event_group.name, "Event group name is defined more than once across loaded sources.", event_group.source_path, "Keep one effective group definition so position references are unambiguous."))
 
     for event in event_list:
         if event.name.startswith("<missing "):
@@ -2086,39 +2596,38 @@ def validate_event_spawn_links(
         if not event.is_enabled():
             continue
         family, label, link_target = classify_event_name(event.name)
-        if link_target == "unknown":
+        position = event.child_text("position")
+        if link_target == "unknown" and position == "fixed":
+            label = "Fixed-position event"
+            link_target = "cfgeventspawns"
+        requires_fixed_positions = link_target == "cfgeventspawns" and position not in {"player", "uniform"}
+        if requires_fixed_positions and event.name.casefold() not in spawn_names:
             issues.append(
                 ValidationIssue(
-                    "warning",
+                    "info",
                     event.name,
-                    "Event name does not start with a known DayZ event family prefix.",
+                    "No cfgeventspawns.xml positions found in loaded physical files for this event.",
                     event.source_path,
-                    "Use the expected family prefix for this event type, such as Vehicle, Static, Item, Infected, Animal, Ambient, Trajectory, or Loot.",
+                    f"{label} may use terrain-default CE data or another positioning system. Add a mission override only when needed.",
                 )
             )
-            continue
-        if link_target == "cfgeventspawns" and not positions_by_name.get(event.name.casefold()):
-            issues.append(
-                ValidationIssue(
-                    "warning",
-                    event.name,
-                    "No cfgeventspawns.xml positions found for this event.",
-                    event.source_path,
-                    f"{label} usually needs fixed positions in cfgeventspawns.xml. Add matching <event name=\"{event.name}\"><pos .../></event> entries, or verify this event is intentionally driven by another system.",
-                )
-            )
+        elif requires_fixed_positions:
+            positions = positions_by_name.get(event.name.casefold(), [])
+            nominal = parse_int(event.child_text("nominal"))
+            if nominal is not None and nominal > 0 and positions and nominal > len(positions):
+                issues.append(ValidationIssue("info", event.name, f"Nominal target {nominal} exceeds {len(positions)} loaded explicit candidate position(s).", event.source_path, "Actual behavior may be constrained by event logic, terrain defaults, and persisted CE state."))
         if link_target == "environment" and zone_list is not None:
             zones = territory_zones_for_event(event, zone_list, environment_map)
             if not zones:
                 parent_links = [
-                    link for link in child_links_by_child.get(event.name.casefold(), [])
+                    link for link in secondary_links_by_secondary.get(event.name.casefold(), [])
                     if link.parent_enabled
                 ]
                 if family == "Infected" and parent_links:
                     continue
                 severity = "info" if family == "Infected" else "warning"
                 suggestion = (
-                    "This can be valid for Infected child events used by another event, such as static situations. Verify the parent event or custom setup if the infected should still appear."
+                    "This can be valid for Infected events referenced through <secondary>, such as static situations. Verify the parent event or custom setup if the infected should still appear."
                     if family == "Infected"
                     else "Check cfgenvironment.xml and env territory files. Animal and Ambient events usually map by territory name."
                 )
@@ -2146,17 +2655,47 @@ def validate_event_spawn_links(
                         )
                     )
 
-    for group in group_list:
-        if group.name.startswith("<missing "):
+    for spawn_group in spawn_group_list:
+        if spawn_group.name.startswith("<missing "):
             continue
-        if group.name.casefold() not in event_names:
+        if spawn_group.name.casefold() not in event_names:
             issues.append(
                 ValidationIssue(
                     "warning",
-                    group.name,
+                    spawn_group.name,
                     "cfgeventspawns.xml references an event that is not defined in events.xml.",
-                    group.source_path,
-                    "Add a matching <event name=\"...\"> entry to events.xml, fix the spawn event name, or remove the unused spawn block.",
+                    spawn_group.source_path,
+                    "This may come from terrain-default or mod event data. Add/fix the event only when the effective event set truly lacks it.",
+                )
+            )
+        for position in spawn_group.positions:
+            group_name = position.attributes.get("group", "").strip()
+            if not group_name:
+                continue
+            group_key = group_name.casefold()
+            referenced_group_names.add(group_key)
+            if group_key not in event_group_names:
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        spawn_group.name,
+                        f"Spawn position references missing event group: {group_name}.",
+                        position.source_path,
+                        "Add the matching <group name=\"...\"> to cfgeventgroups.xml or correct/remove the group reference.",
+                    )
+                )
+
+    for event_group in event_group_list:
+        if event_group.name.startswith("<missing "):
+            continue
+        if event_group.name.casefold() not in referenced_group_names:
+            issues.append(
+                ValidationIssue(
+                    "info",
+                    event_group.name,
+                    "Event group is not referenced by any loaded cfgeventspawns.xml position.",
+                    event_group.source_path,
+                    "Unused groups can be intentional seasonal, disabled, future, or mod-compatibility content.",
                 )
             )
 
@@ -2178,7 +2717,7 @@ def parse_cfglimitsdefinition_file(path: str | os.PathLike[str]) -> tuple[dict[s
     path = str(path)
     definitions = {field: set() for field in RELATION_FIELDS}
     try:
-        root = ET.parse(path).getroot()
+        root = parse_xml_file(path).getroot()
     except ET.ParseError as exc:
         return {field: [] for field in RELATION_FIELDS}, [create_xml_parse_issue(path, exc)]
     except OSError as exc:
@@ -2195,6 +2734,7 @@ def parse_cfglimitsdefinition_file(path: str | os.PathLike[str]) -> tuple[dict[s
 
 
 def write_cfglimitsdefinition_file(definitions: dict[str, list[str]], output_path: str | os.PathLike[str]) -> None:
+    ensure_not_ignored_storage_path(output_path)
     root = ET.Element("lists")
     for field in RELATION_FIELDS:
         group_tag, child_tag = RELATION_DEFINITION_GROUPS[field]
@@ -2222,7 +2762,7 @@ def parse_cfgeconomycore_file_refs(path: str | os.PathLike[str], mission_root: s
     matched_paths: list[str] = []
     issues: list[ValidationIssue] = []
     try:
-        root = ET.parse(path).getroot()
+        root = parse_xml_file(path).getroot()
     except ET.ParseError as exc:
         return [], [create_xml_parse_issue(path, exc)]
     except OSError as exc:
@@ -2243,6 +2783,8 @@ def parse_cfgeconomycore_file_refs(path: str | os.PathLike[str], mission_root: s
                 issues.append(ValidationIssue("warning", "", f"<file type=\"{wanted_type}\"> entry is missing the name attribute.", path, f"Add name=\"your_{wanted_type}_file.xml\" or remove the broken entry."))
                 continue
             resolved_path = ce_folder / filename
+            if is_ignored_storage_path(resolved_path):
+                continue
             if resolved_path.is_file():
                 matched_paths.append(str(resolved_path))
             else:
@@ -2370,7 +2912,7 @@ def parse_weather_config_file(path: str | os.PathLike[str]) -> tuple[dict[str, s
     values = weather_default_values()
     issues: list[ValidationIssue] = []
     try:
-        root = ET.parse(source).getroot()
+        root = parse_xml_file(source).getroot()
     except ET.ParseError as exc:
         return values, [create_xml_parse_issue(str(source), exc)]
     except OSError as exc:
@@ -2445,6 +2987,7 @@ def format_weather_config_xml(values: dict[str, str]) -> str:
 
 
 def write_weather_config_file(values: dict[str, str], output_path: str | os.PathLike[str]) -> None:
+    ensure_not_ignored_storage_path(output_path)
     Path(output_path).write_text(format_weather_config_xml(values), encoding="utf-8")
 
 
@@ -2606,6 +3149,7 @@ def decode_config_text(data: bytes) -> str:
 
 
 def read_config_text_file(path: str | os.PathLike[str]) -> str:
+    ensure_not_ignored_storage_path(path)
     return decode_config_text(Path(path).read_bytes())
 
 
@@ -2657,18 +3201,21 @@ def convert_config_bin_data_to_text(data: bytes, cfgconvert_exe: str, source_lab
 
 
 def convert_config_bin_file_to_text(path: str | os.PathLike[str], cfgconvert_exe: str) -> str:
+    ensure_not_ignored_storage_path(path)
     return convert_config_bin_data_to_text(Path(path).read_bytes(), cfgconvert_exe, str(path))
 
 
 def config_source_files(path: str | os.PathLike[str]) -> list[str]:
     root = Path(path)
+    if is_ignored_storage_path(root):
+        return []
     if root.is_file():
         return [str(root)] if root.name.lower() in {"config.cpp", "config.hpp", "config.bin"} or root.suffix.lower() in {".cpp", ".hpp"} else []
     if not root.is_dir():
         return []
     return [
         str(item)
-        for item in sorted(root.rglob("*"), key=lambda candidate: str(candidate).casefold())
+        for item in sorted(iter_files_ignoring_storage(root), key=lambda candidate: str(candidate).casefold())
         if item.is_file() and (item.name.lower() in {"config.cpp", "config.hpp", "config.bin"} or item.suffix.lower() in {".cpp", ".hpp"})
     ]
 
@@ -2964,9 +3511,11 @@ def discover_config_files(
     paths: list[str] = []
     for root_value in roots:
         root = Path(root_value)
+        if is_ignored_storage_path(root):
+            continue
         if not root.is_dir():
             continue
-        candidates = root.rglob("*") if recursive else root.iterdir()
+        candidates = iter_files_ignoring_storage(root) if recursive else (path for path in root.iterdir() if path.name.casefold() != IGNORED_STORAGE_DIRNAME)
         for path in candidates:
             if not path.is_file():
                 continue
@@ -2983,8 +3532,10 @@ def validate_xml_files(paths: Iterable[str | os.PathLike[str]]) -> list[Validati
     issues: list[ValidationIssue] = []
     for path in dedupe_paths(paths):
         path = str(path)
+        if is_ignored_storage_path(path):
+            continue
         try:
-            ET.parse(path)
+            parse_xml_file(path)
         except ET.ParseError as exc:
             issues.append(create_xml_parse_issue(path, exc))
         except OSError as exc:
@@ -2994,9 +3545,11 @@ def validate_xml_files(paths: Iterable[str | os.PathLike[str]]) -> list[Validati
 
 def mission_xml_paths(root_path: str | os.PathLike[str]) -> list[str]:
     root = Path(root_path)
+    if is_ignored_storage_path(root):
+        return []
     if not root.is_dir():
         return []
-    return dedupe_paths(sorted((str(path) for path in root.rglob("*.xml") if path.is_file()), key=str.casefold))
+    return dedupe_paths(sorted((str(path) for path in iter_files_ignoring_storage(root) if path.suffix.casefold() == ".xml"), key=str.casefold))
 
 
 def validate_mission_workspace_xml(root_path: str | os.PathLike[str]) -> list[ValidationIssue]:
@@ -3006,15 +3559,18 @@ def validate_mission_workspace_xml(root_path: str | os.PathLike[str]) -> list[Va
 def discover_mission_workspace(root_path: str | os.PathLike[str]) -> MissionWorkspace:
     root = Path(root_path)
     issues: list[ValidationIssue] = []
+    if is_ignored_storage_path(root):
+        return MissionWorkspace(str(root), [], [], [], [], [], [], [], [], {}, [], [], {field: [] for field in RELATION_FIELDS}, [])
     if not root.is_dir():
         issue = ValidationIssue("error", "", f"Mission folder does not exist: {root}", str(root), "Choose the mission folder, for example an mpmissions/dayzOffline.* directory.")
-        return MissionWorkspace(str(root), [], [], [], [], [], [], [], {}, [], [], {field: [] for field in RELATION_FIELDS}, [issue])
+        return MissionWorkspace(str(root), [], [], [], [], [], [], [], [], {}, [], [], {field: [] for field in RELATION_FIELDS}, [issue])
 
     type_paths: list[str] = []
     spawnable_type_paths: list[str] = []
     random_preset_paths: list[str] = []
     event_paths: list[str] = []
     event_spawn_paths: list[str] = []
+    event_group_paths: list[str] = []
     territory_paths: list[str] = []
     cfgenvironment_paths: list[str] = []
     environment_territory_paths: dict[str, list[str]] = {}
@@ -3055,8 +3611,17 @@ def discover_mission_workspace(root_path: str | os.PathLike[str]) -> MissionWork
     for dirname in ("env", "events", "cfgeconomycore"):
         directory = root / dirname
         if directory.is_dir():
-            event_spawn_candidates.extend(sorted(directory.rglob(MISSION_EVENT_SPAWNS_FILENAME), key=lambda item: str(item).casefold()))
+            event_spawn_candidates.extend(
+                sorted(
+                    (path for path in iter_files_ignoring_storage(directory) if path.name.casefold() == MISSION_EVENT_SPAWNS_FILENAME),
+                    key=lambda item: str(item).casefold(),
+                )
+            )
     event_spawn_paths.extend(str(path) for path in event_spawn_candidates if path.is_file())
+
+    for event_group_path in (root / MISSION_EVENT_GROUPS_FILENAME, db_path / MISSION_EVENT_GROUPS_FILENAME):
+        if event_group_path.is_file():
+            event_group_paths.append(str(event_group_path))
 
     environment_path = root / MISSION_ENVIRONMENT_FILENAME
     if environment_path.is_file():
@@ -3096,7 +3661,16 @@ def discover_mission_workspace(root_path: str | os.PathLike[str]) -> MissionWork
         issues.append(ValidationIssue("info", "", "No cfgeconomycore.xml found in mission folder.", str(root), "Add cfgeconomycore.xml if the mission uses CE folders with additional type files."))
 
     relation_definitions = {field: sorted(values, key=str.casefold) for field, values in relation_sets.items()}
-    return MissionWorkspace(str(root), dedupe_paths(type_paths), dedupe_paths(spawnable_type_paths), dedupe_paths(random_preset_paths), dedupe_paths(event_paths), dedupe_paths(event_spawn_paths), dedupe_paths(territory_paths), dedupe_paths(cfgenvironment_paths), environment_territory_paths, cfgeconomycore_paths, cfglimits_paths, relation_definitions, issues)
+    def allowed(paths):
+        return dedupe_paths(path for path in paths if not is_ignored_storage_path(path))
+
+    filtered_environment_paths = {}
+    for name, paths in environment_territory_paths.items():
+        filtered_paths = allowed(paths)
+        if filtered_paths:
+            filtered_environment_paths[name] = filtered_paths
+    environment_territory_paths = filtered_environment_paths
+    return MissionWorkspace(str(root), allowed(type_paths), allowed(spawnable_type_paths), allowed(random_preset_paths), allowed(event_paths), allowed(event_spawn_paths), allowed(event_group_paths), allowed(territory_paths), allowed(cfgenvironment_paths), environment_territory_paths, allowed(cfgeconomycore_paths), allowed(cfglimits_paths), relation_definitions, issues)
 
 
 def create_xml_parse_issue(path: str, exc: ET.ParseError) -> ValidationIssue:
@@ -3112,6 +3686,8 @@ def create_xml_parse_issue(path: str, exc: ET.ParseError) -> ValidationIssue:
 
 def get_file_line_context(path: str, line: int | None, column: int | None) -> str:
     if line is None or line < 1:
+        return ""
+    if is_ignored_storage_path(path):
         return ""
     try:
         with open(path, "r", encoding="utf-8-sig", errors="replace") as file:
@@ -3129,6 +3705,8 @@ def load_types_files(paths: Iterable[str | os.PathLike[str]], include_duplicates
     all_entries: list[TypeEntry] = []
     all_issues: list[ValidationIssue] = []
     for index, path in enumerate(paths):
+        if is_ignored_storage_path(path):
+            continue
         entries, issues = parse_types_file(path, index)
         all_entries.extend(entries)
         all_issues.extend(issues)
@@ -3141,6 +3719,8 @@ def load_spawnable_types_files(paths: Iterable[str | os.PathLike[str]]) -> tuple
     all_entries: list[SpawnableTypeEntry] = []
     all_issues: list[ValidationIssue] = []
     for index, path in enumerate(paths):
+        if is_ignored_storage_path(path):
+            continue
         entries, issues = parse_spawnable_types_file(path, index)
         all_entries.extend(entries)
         all_issues.extend(issues)
@@ -3151,6 +3731,8 @@ def load_random_presets_files(paths: Iterable[str | os.PathLike[str]]) -> tuple[
     all_entries: list[RandomPresetEntry] = []
     all_issues: list[ValidationIssue] = []
     for index, path in enumerate(paths):
+        if is_ignored_storage_path(path):
+            continue
         entries, issues = parse_random_presets_file(path, index)
         all_entries.extend(entries)
         all_issues.extend(issues)
@@ -3453,7 +4035,7 @@ def relation_values_from_element(element: ET.Element) -> dict[str, set[str]]:
 
 
 def parse_mapgrouppos_counts(path: str | os.PathLike[str]) -> Counter:
-    root = ET.parse(path).getroot()
+    root = parse_xml_file(path).getroot()
     counts: Counter = Counter()
     for element in root.iter():
         name = element.attrib.get("name", "").strip()
@@ -3478,6 +4060,33 @@ def xml_element_to_text(element: ET.Element) -> str:
     clone = copy.deepcopy(element)
     ET.indent(clone, space="    ")
     return ET.tostring(clone, encoding="unicode").strip()
+
+
+def parse_commented_xml_element(comment: ET.Element, expected_tag: str = "") -> ET.Element | None:
+    if comment.tag is not ET.Comment:
+        return None
+    text = str(comment.text or "").strip()
+    if not text:
+        return None
+    try:
+        element = ET.fromstring(text)
+    except ET.ParseError:
+        return None
+    if expected_tag and element.tag != expected_tag:
+        return None
+    return element
+
+
+def mapgroupproto_element_records(parent: ET.Element, tag: str, inherited_commented: bool = False) -> list[tuple[ET.Element, bool]]:
+    records: list[tuple[ET.Element, bool]] = []
+    for child in list(parent):
+        if child.tag == tag:
+            records.append((child, inherited_commented))
+            continue
+        commented = parse_commented_xml_element(child, tag)
+        if commented is not None:
+            records.append((commented, True))
+    return records
 
 
 def mapgroupproto_match_count(relations: dict[str, tuple[str, ...]], entries: Iterable[TypeEntry]) -> int:
@@ -3542,7 +4151,8 @@ def parse_mapgroupproto_file(
     path = str(path)
     issues: list[ValidationIssue] = []
     try:
-        tree = ET.parse(path)
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        tree = parse_xml_file(path, parser=parser)
     except ET.ParseError as exc:
         return [], [create_xml_parse_issue(path, exc)]
     except OSError as exc:
@@ -3577,61 +4187,69 @@ def parse_mapgroupproto_file(
     entries = list(type_entries)
     names: Counter = Counter()
     groups: list[MapGroupProtoGroup] = []
-    group_elements = list(root.findall("group"))
-    if not group_elements:
-        group_elements = [element for element in root.findall(".//group") if element.attrib.get("name", "").strip()]
-    for index, group in enumerate(group_elements):
+    group_records = mapgroupproto_element_records(root, "group")
+    if not group_records:
+        group_records = [(element, False) for element in root.findall(".//group") if element.attrib.get("name", "").strip()]
+    for index, (group, group_commented) in enumerate(group_records):
         group_issues_before = len(issues)
         name = group.attrib.get("name", "").strip()
         if not name:
             name = f"<missing group name #{index + 1}>"
-            if collect_issues:
+            if collect_issues and not group_commented:
                 issues.append(ValidationIssue("error", name, "Group is missing name attribute.", path, "Add the object/building classname to <group name=\"...\">."))
-        names[name] += 1
+        if not group_commented:
+            names[name] += 1
         lootmax_raw = group.attrib.get("lootmax", "0").strip()
         lootmax = parse_positive_int(lootmax_raw)
-        if collect_issues and lootmax_raw and parse_int(lootmax_raw) is None:
+        if collect_issues and not group_commented and lootmax_raw and parse_int(lootmax_raw) is None:
             issues.append(ValidationIssue("warning", name, f"Invalid group lootmax: {lootmax_raw}", path, "lootmax should be an integer >= 0."))
 
         group_relations = {kind: mapgroupproto_relation_tuple(group, kind) for kind in RELATION_FIELDS}
         relation_issue_count = 0
         for kind, values in group_relations.items():
             for value in values:
-                if collect_issues:
+                if collect_issues and not group_commented:
                     relation_issue_count += validate_mapgroupproto_relation(issues, path, name, kind, value, definitions)
 
         containers: list[MapGroupProtoContainer] = []
         container_lootmax_sum = 0
         point_total = 0
-        for container_index, container in enumerate(group.findall("container")):
+        active_point_total = 0
+        active_container_count = 0
+        for container_index, (container, container_commented) in enumerate(mapgroupproto_element_records(group, "container", group_commented)):
             container_issues_before = len(issues)
+            if not container_commented:
+                active_container_count += 1
             container_name = container.attrib.get("name", "").strip()
             if not container_name:
                 container_name = f"<missing container name #{container_index + 1}>"
-                if collect_issues:
+                if collect_issues and not container_commented:
                     issues.append(ValidationIssue("warning", name, "Container is missing name attribute.", path, "Name containers so they are easier to identify."))
             container_lootmax_raw = container.attrib.get("lootmax", "0").strip()
             container_lootmax = parse_positive_int(container_lootmax_raw)
             container_lootmax_sum += container_lootmax
-            if collect_issues and container_lootmax_raw and parse_int(container_lootmax_raw) is None:
+            if collect_issues and not container_commented and container_lootmax_raw and parse_int(container_lootmax_raw) is None:
                 issues.append(ValidationIssue("warning", name, f"Invalid container lootmax: {container_lootmax_raw}", path, "Container lootmax should be an integer >= 0."))
 
             relations = {kind: tuple(dict.fromkeys(group_relations.get(kind, ()) + mapgroupproto_relation_tuple(container, kind))) for kind in RELATION_FIELDS}
             for kind, values in relations.items():
                 for value in values:
-                    if collect_issues:
+                    if collect_issues and not container_commented:
                         validate_mapgroupproto_relation(issues, path, name, kind, value, definitions)
 
             points: list[MapGroupProtoPoint] = []
-            for point in container.findall("point"):
+            active_point_count = 0
+            for point, point_commented in mapgroupproto_element_records(container, "point", container_commented):
                 point_issues = 0
+                if not point_commented:
+                    active_point_count += 1
                 pos = point.attrib.get("pos", "").strip()
-                if collect_issues and not parse_number_list(pos, 3):
+                if collect_issues and not point_commented and not parse_number_list(pos, 3):
                     point_issues += 1
                     issues.append(ValidationIssue("warning", name, f"Point has invalid pos: {pos or '<missing>'}", path, "Point pos should contain exactly 3 numeric values: x y z."))
                 for attr in ("range", "height"):
                     raw = point.attrib.get(attr, "").strip()
-                    if collect_issues and raw:
+                    if collect_issues and not point_commented and raw:
                         try:
                             if float(raw) < 0:
                                 raise ValueError
@@ -3645,14 +4263,16 @@ def parse_mapgroupproto_file(
                         height=point.attrib.get("height", "").strip(),
                         flags=point.attrib.get("flags", "").strip(),
                         issue_count=point_issues,
+                        commented=point_commented,
                     )
                 )
             point_count = len(points)
             point_total += point_count
-            if collect_issues and point_count <= 0:
+            active_point_total += active_point_count
+            if collect_issues and not container_commented and active_point_count <= 0:
                 issues.append(ValidationIssue("warning", name, f"Container {container_name} has no point entries.", path, "A container without points cannot provide normal loot positions."))
             matching_items = mapgroupproto_match_count(relations, entries)
-            if collect_issues and entries and matching_items <= 0:
+            if collect_issues and not container_commented and entries and matching_items <= 0:
                 issues.append(ValidationIssue("warning", name, f"Container {container_name} filters match zero loaded type entries.", path, "Check category, usage, value, and tag spelling against Types and cfglimitsdefinition.xml."))
             containers.append(
                 MapGroupProtoContainer(
@@ -3666,18 +4286,19 @@ def parse_mapgroupproto_file(
                     matching_item_count=matching_items,
                     issue_count=len(issues) - container_issues_before,
                     points=tuple(points),
+                    commented=container_commented,
                 )
             )
 
-        if collect_issues and not containers:
+        if collect_issues and not group_commented and active_container_count <= 0:
             issues.append(ValidationIssue("warning", name, "Group has no containers.", path, "A group without containers cannot provide normal filtered loot points."))
-        if collect_issues and point_total > 0 and lootmax > point_total * 3:
-            issues.append(ValidationIssue("warning", name, f"Group lootmax {lootmax} is much higher than {point_total} point(s).", path, "lootmax is a cap, not a way to create more physical spawn positions."))
-        if collect_issues and container_lootmax_sum > 0 and lootmax > 0 and lootmax < container_lootmax_sum:
-            issues.append(ValidationIssue("warning", name, f"Group lootmax {lootmax} is lower than container lootmax sum {container_lootmax_sum}.", path, "Group lootmax caps total loot and may throttle containers."))
+        if collect_issues and not group_commented and active_point_total > 0 and lootmax > active_point_total * 3:
+            issues.append(ValidationIssue("warning", name, f"Group lootmax {lootmax} is much higher than {active_point_total} point(s).", path, "lootmax is a cap, not a way to create more physical spawn positions."))
         placed_count = int(placement_counts.get(name, 0))
-        if collect_issues and mapgrouppos_path and placed_count <= 0:
-            issues.append(ValidationIssue("warning", name, "Prototype group has no matching placed instance in mapgrouppos.xml.", path, "This prototype may not affect the map unless the object is placed by another CE-recognized method."))
+
+        group_xml = xml_element_to_text(group)
+        if group_commented:
+            group_xml = f"<!--\n{group_xml}\n-->"
 
         groups.append(
             MapGroupProtoGroup(
@@ -3694,7 +4315,8 @@ def parse_mapgroupproto_file(
                 matching_item_count=sum(container.matching_item_count for container in containers),
                 issue_count=len(issues) - group_issues_before + relation_issue_count,
                 containers=tuple(containers),
-                xml=xml_element_to_text(group),
+                xml=group_xml,
+                commented=group_commented,
             )
         )
 
@@ -3704,12 +4326,12 @@ def parse_mapgroupproto_file(
     prototype_names = set(names)
     if collect_issues:
         for placed_name in sorted(placed_names - prototype_names, key=str.casefold)[:200]:
-            issues.append(ValidationIssue("info", placed_name, "mapgrouppos.xml has placed instance without matching mapgroupproto group.", str(mapgrouppos_path), "This object has placement data but no prototype in the loaded mapgroupproto.xml."))
+            issues.append(ValidationIssue("warning", placed_name, "mapgrouppos.xml has placed instance without matching mapgroupproto group.", str(mapgrouppos_path), "Add a matching prototype group or remove/fix the orphaned mapgrouppos.xml placement name."))
     return groups, issues
 
 
 def parse_mapgroupproto_summaries(path: str | os.PathLike[str], placement_counts: Counter) -> tuple[LootMapGroupSummary, ...]:
-    root = ET.parse(path).getroot()
+    root = parse_xml_file(path).getroot()
     summaries: list[LootMapGroupSummary] = []
     for group in root.iter():
         if group.tag != "group":
@@ -4224,6 +4846,8 @@ def dayz_text_file_kind(path: str | os.PathLike[str]) -> str:
 
 
 def _read_text_log(path: Path) -> tuple[list[str], DayZLogFinding | None]:
+    if is_ignored_storage_path(path):
+        return [], None
     try:
         return path.read_text(encoding="utf-8-sig", errors="replace").splitlines(), None
     except OSError as exc:
@@ -4594,6 +5218,8 @@ def _read_minidump_utf16_string(data: bytes, rva: int) -> str:
 
 def analyze_dayz_minidump(path: str | os.PathLike[str]) -> list[DayZLogFinding]:
     source = Path(path)
+    if is_ignored_storage_path(source):
+        return []
     try:
         data = source.read_bytes()
     except OSError as exc:
@@ -4969,10 +5595,15 @@ def create_change_report(original_entries: Iterable[TypeEntry], current_entries:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def event_entry_summary(entry: EventEntry) -> dict[str, str]:
-    summary: dict[str, str] = {"name": entry.name}
+def event_entry_summary(entry: EventEntry) -> dict[str, object]:
+    summary: dict[str, object] = {"name": entry.name}
     for field in EVENT_REPORT_FIELDS:
-        summary[field] = entry.child_text(field)
+        if field in EVENT_FLAG_FIELDS:
+            summary[field] = entry.flag_value(field)
+        elif field == "children":
+            summary[field] = tuple(tuple(sorted(child.attrib.items())) for child in entry.element.findall("./children/child"))
+        else:
+            summary[field] = entry.child_text(field)
     return summary
 
 
@@ -5181,6 +5812,7 @@ def create_territory_change_report(original_zones: Iterable[TerritoryZone], curr
 
 
 def write_change_report(original_entries: Iterable[TypeEntry], current_entries: Iterable[TypeEntry], output_path: str | os.PathLike[str]) -> None:
+    ensure_not_ignored_storage_path(output_path)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_text(create_change_report(original_entries, current_entries), encoding="utf-8")
 
@@ -5639,6 +6271,7 @@ def update_cfgeconomycore_types_text(content: str, folder: str, filenames: Itera
 
 
 def write_types_file(entries: Iterable[TypeEntry], output_path: str | os.PathLike[str], keep_duplicates: bool = False) -> None:
+    ensure_not_ignored_storage_path(output_path)
     entries = list(entries if keep_duplicates else merged_entries(entries, keep="last"))
     text = render_types_xml(entries, keep_duplicates=True)
     path = Path(output_path)
@@ -5647,6 +6280,7 @@ def write_types_file(entries: Iterable[TypeEntry], output_path: str | os.PathLik
 
 
 def write_spawnable_types_file(entries: Iterable[SpawnableTypeEntry], output_path: str | os.PathLike[str]) -> None:
+    ensure_not_ignored_storage_path(output_path)
     root = ET.Element("spawnabletypes")
     for entry in sorted(entries, key=lambda item: item.name.casefold()):
         root.append(copy.deepcopy(entry.element))
@@ -5658,6 +6292,7 @@ def write_spawnable_types_file(entries: Iterable[SpawnableTypeEntry], output_pat
 
 
 def write_random_presets_file(entries: Iterable[RandomPresetEntry], output_path: str | os.PathLike[str]) -> None:
+    ensure_not_ignored_storage_path(output_path)
     root = ET.Element("randompresets")
     for entry in sorted(entries, key=lambda item: (item.kind.casefold(), item.name.casefold())):
         root.append(copy.deepcopy(entry.element))
@@ -5682,23 +6317,135 @@ def render_types_xml(entries: Iterable[TypeEntry], keep_duplicates: bool = False
 
 
 def write_events_file(entries: Iterable[EventEntry], output_path: str | os.PathLike[str]) -> None:
-    root = ET.Element("events")
-    for entry in sorted(entries, key=lambda item: item.name.casefold()):
-        root.append(copy.deepcopy(entry.element))
+    ensure_not_ignored_storage_path(output_path)
+    output_path = Path(output_path)
+    if output_path.is_file():
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        root = parse_xml_file(output_path, parser=parser).getroot()
+        if root.tag != "events":
+            raise ValueError(f"Expected root <events>, got <{root.tag}>.")
+    else:
+        root = ET.Element("events")
+    event_elements = []
+    for entry in entries:
+        element = copy.deepcopy(entry.element)
+        order_event_entry_children(element)
+        event_elements.append(element)
 
+    _reconcile_xml_children(root, "event", event_elements)
     indent_xml(root)
-    tree = ET.ElementTree(root)
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    tree.write(output_path, encoding="utf-8", xml_declaration=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    ET.ElementTree(root).write(output_path, encoding="utf-8", xml_declaration=True)
+
+
+def _reconcile_xml_children(parent: ET.Element, tag: str, replacements: Iterable[ET.Element]) -> None:
+    replacement_list = [copy.deepcopy(element) for element in replacements]
+    replacement_index = 0
+    for child in list(parent):
+        if child.tag != tag:
+            continue
+        child_index = list(parent).index(child)
+        parent.remove(child)
+        if replacement_index < len(replacement_list):
+            parent.insert(child_index, replacement_list[replacement_index])
+            replacement_index += 1
+    for element in replacement_list[replacement_index:]:
+        parent.append(element)
+
+
+def event_spawn_group_to_element(group: EventSpawnGroup) -> ET.Element:
+    element = copy.deepcopy(group.element)
+    element.tag = "event"
+    element.attrib["name"] = group.name
+    zones = [child for child in list(element) if child.tag == "zone"]
+    if group.zone is None:
+        for zone in zones:
+            element.remove(zone)
+    else:
+        zone_element = copy.deepcopy(group.zone.element)
+        zone_element.attrib.clear()
+        zone_element.attrib.update(group.zone.attributes)
+        if zones:
+            zone_index = list(element).index(zones[0])
+            element.remove(zones[0])
+            element.insert(zone_index, zone_element)
+        else:
+            first_pos = next((index for index, child in enumerate(list(element)) if child.tag == "pos"), len(element))
+            element.insert(first_pos, zone_element)
+    position_elements = []
+    for position in group.positions:
+        position_element = copy.deepcopy(position.element) if position.element is not None else ET.Element("pos")
+        position_element.tag = "pos"
+        position_element.attrib.clear()
+        position_element.attrib.update(position.attributes)
+        position_elements.append(position_element)
+    _reconcile_xml_children(element, "pos", position_elements)
+    return element
+
+
+def event_group_definition_to_element(group: EventGroupDefinition) -> ET.Element:
+    element = copy.deepcopy(group.element)
+    element.tag = "group"
+    element.attrib["name"] = group.name
+    child_elements = []
+    for child in group.children:
+        child_element = copy.deepcopy(child.element)
+        child_element.tag = "child"
+        child_element.attrib.clear()
+        child_element.attrib.update(child.attributes)
+        child_elements.append(child_element)
+    _reconcile_xml_children(element, "child", child_elements)
+    return element
+
+
+def format_event_spawn_group_xml(group: EventSpawnGroup) -> str:
+    return xml_element_to_text(event_spawn_group_to_element(group))
+
+
+def format_event_group_definition_xml(group: EventGroupDefinition) -> str:
+    return xml_element_to_text(event_group_definition_to_element(group))
+
+
+def write_event_spawns_file(groups: Iterable[EventSpawnGroup], output_path: str | os.PathLike[str]) -> None:
+    ensure_not_ignored_storage_path(output_path)
+    output_path = Path(output_path)
+    if output_path.is_file():
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        root = parse_xml_file(output_path, parser=parser).getroot()
+        if root.tag != "eventposdef":
+            raise ValueError(f"Expected root <eventposdef>, got <{root.tag}>.")
+    else:
+        root = ET.Element("eventposdef")
+    _reconcile_xml_children(root, "event", (event_spawn_group_to_element(group) for group in groups))
+    ET.indent(root, space="    ")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    ET.ElementTree(root).write(output_path, encoding="utf-8", xml_declaration=True)
+
+
+def write_event_groups_file(groups: Iterable[EventGroupDefinition], output_path: str | os.PathLike[str]) -> None:
+    ensure_not_ignored_storage_path(output_path)
+    output_path = Path(output_path)
+    if output_path.is_file():
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        root = parse_xml_file(output_path, parser=parser).getroot()
+        if root.tag != "eventgroupdef":
+            raise ValueError(f"Expected root <eventgroupdef>, got <{root.tag}>.")
+    else:
+        root = ET.Element("eventgroupdef")
+    _reconcile_xml_children(root, "group", (event_group_definition_to_element(group) for group in groups))
+    ET.indent(root, space="    ")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    ET.ElementTree(root).write(output_path, encoding="utf-8", xml_declaration=True)
 
 
 def write_territory_file(zones: Iterable[TerritoryZone], output_path: str | os.PathLike[str], groups: Iterable[TerritoryGroup] | None = None) -> None:
+    ensure_not_ignored_storage_path(output_path)
     zones = list(zones)
     groups = list(groups or [])
     output_path = Path(output_path)
     root_attributes: dict[str, str] = {}
     try:
-        tree = ET.parse(output_path)
+        tree = parse_xml_file(output_path)
         root = tree.getroot()
         root_attributes = {str(key): str(value) for key, value in root.attrib.items()}
         existing_zones = root.findall(".//zone")
@@ -5755,6 +6502,7 @@ def format_entry_xml(entry: TypeEntry) -> str:
 
 def format_event_xml(entry: EventEntry) -> str:
     element = copy.deepcopy(entry.element)
+    order_event_entry_children(element)
     indent_xml(element)
     return ET.tostring(element, encoding="unicode")
 

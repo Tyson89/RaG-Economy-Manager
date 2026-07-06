@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import copy
 import hashlib
+import math
 import os
 import re
 import shutil
@@ -41,11 +42,20 @@ except Exception:
 
 from rag_economy_core import (
     BULK_FIELDS,
+    ENVIRONMENT_ATTRIBUTE_EXPLANATIONS,
+    ENVIRONMENT_ELEMENT_EXPLANATIONS,
+    ENVIRONMENT_ITEM_EXPLANATIONS,
     FLAG_FIELDS,
     RELATION_FIELDS,
+    MISSION_EVENT_GROUPS_FILENAME,
     MISSION_MAPGROUPPROTO_FILENAME,
     MISSION_MAPGROUPPOS_FILENAME,
     MapGroupProtoGroup,
+    EventGroupChild,
+    EventGroupDefinition,
+    EventSpawnGroup,
+    EventSpawnPosition,
+    EventSpawnZone,
     TypeEntry,
     RandomPresetEntry,
     RandomPresetItem,
@@ -60,6 +70,7 @@ from rag_economy_core import (
     compare_entries,
     config_class_entries_to_type_entries,
     create_change_report,
+    create_event_entry,
     create_event_change_report,
     create_random_preset_change_report,
     create_spawnable_type_change_report,
@@ -69,13 +80,17 @@ from rag_economy_core import (
     dayz_text_file_kind,
     discover_config_files,
     discover_mission_workspace,
-    event_child_links_by_child,
-    event_child_links_by_parent,
+    event_secondary_links_by_parent,
+    event_secondary_links_by_secondary,
     event_environment_names,
+    environment_links_from_root,
     format_distribution_map,
+    format_cfgenvironment_xml,
     format_loot_distribution_csv,
     format_loot_distribution_json,
     format_event_xml,
+    format_event_group_definition_xml,
+    format_event_spawn_group_xml,
     format_loot_distribution_report,
     format_entry_xml,
     format_random_preset_xml,
@@ -83,7 +98,9 @@ from rag_economy_core import (
     format_territory_xml,
     format_weather_config_xml,
     get_duplicate_groups,
+    is_ignored_storage_path,
     is_supported_config_file,
+    iter_files_ignoring_storage,
     load_random_presets_files,
     load_spawnable_types_files,
     load_types_files,
@@ -93,6 +110,9 @@ from rag_economy_core import (
     find_cfgconvert,
     find_windows_cdb,
     parse_event_spawns_file,
+    parse_event_groups_file,
+    parse_commented_xml_element,
+    parse_cfgenvironment_document,
     parse_events_file,
     parse_mapgroupproto_file,
     parse_areaflags_map,
@@ -118,6 +138,7 @@ from rag_economy_core import (
     update_cfgeconomycore_file_refs_text,
     update_cfgeconomycore_types_text,
     validate_entries,
+    validate_event_entries,
     validate_event_spawn_links,
     validate_mission_workspace_xml,
     validate_random_preset_references,
@@ -125,7 +146,10 @@ from rag_economy_core import (
     validate_xml_files,
     validate_weather_values,
     write_cfglimitsdefinition_file,
+    write_cfgenvironment_file,
     write_events_file,
+    write_event_groups_file,
+    write_event_spawns_file,
     write_random_presets_file,
     write_spawnable_types_file,
     write_territory_file,
@@ -236,11 +260,61 @@ MAP_MARKER_ICON_FILES = {
     "chicken": os.path.join("assets", "map_icons", "chicken.png"),
     "horse": os.path.join("assets", "map_icons", "horse.png"),
     "infected": os.path.join("assets", "map_icons", "infected.png"),
+    "cat": os.path.join("assets", "map_icons", "cat.png"),
+    "dog": os.path.join("assets", "map_icons", "dog.png"),
+    "rat": os.path.join("assets", "map_icons", "rat.png"),
+    "mouse": os.path.join("assets", "map_icons", "mouse.png"),
+    "bat": os.path.join("assets", "map_icons", "bat.png"),
+    "owl": os.path.join("assets", "map_icons", "owl.png"),
+    "eagle": os.path.join("assets", "map_icons", "eagle.png"),
+    "raven": os.path.join("assets", "map_icons", "raven.png"),
+    "stag": os.path.join("assets", "map_icons", "stag.png"),
+    "bison": os.path.join("assets", "map_icons", "bison.png"),
+    "buffalo": os.path.join("assets", "map_icons", "buffalo.png"),
+    "lion": os.path.join("assets", "map_icons", "lion.png"),
+    "tiger": os.path.join("assets", "map_icons", "tiger.png"),
+    "hyena": os.path.join("assets", "map_icons", "hyena.png"),
+    "crocodile": os.path.join("assets", "map_icons", "crocodile.png"),
+    "snake": os.path.join("assets", "map_icons", "snake.png"),
+    "frog": os.path.join("assets", "map_icons", "frog.png"),
+    "spider": os.path.join("assets", "map_icons", "spider.png"),
+    "scorpion": os.path.join("assets", "map_icons", "scorpion.png"),
+    "shark": os.path.join("assets", "map_icons", "shark.png"),
+    "fish-monster": os.path.join("assets", "map_icons", "fish-monster.png"),
+    "dinosaur": os.path.join("assets", "map_icons", "dinosaur.png"),
+    "dragon": os.path.join("assets", "map_icons", "dragon.png"),
+    "griffin": os.path.join("assets", "map_icons", "griffin.png"),
+    "hydra": os.path.join("assets", "map_icons", "hydra.png"),
+    "werewolf": os.path.join("assets", "map_icons", "werewolf.png"),
+    "vampire": os.path.join("assets", "map_icons", "vampire.png"),
+    "giant": os.path.join("assets", "map_icons", "giant.png"),
+    "monster": os.path.join("assets", "map_icons", "monster.png"),
 }
 MAP_MARKER_ICON_RULES = (
     ("infected", ("infected", "zombie", "zmbm", "zmbf")),
+    ("werewolf", ("werewolf", "lycan")),
+    ("vampire", ("vampire", "dracula")),
+    ("dinosaur", ("dinosaur", "trex", "tyrannosaurus")),
+    ("dragon", ("dragon",)),
+    ("griffin", ("griffin", "gryphon")),
+    ("hydra", ("hydra",)),
+    ("monster", ("monster", "mutant")),
     ("bear", ("bear",)),
     ("wolf", ("wolf",)),
+    ("dog", ("canine", "dog")),
+    ("lion", ("lion",)),
+    ("tiger", ("tiger",)),
+    ("hyena", ("hyena",)),
+    ("bison", ("bison",)),
+    ("buffalo", ("buffalo",)),
+    ("crocodile", ("crocodile", "alligator")),
+    ("snake", ("snake", "serpent")),
+    ("spider", ("spider", "arachnid")),
+    ("scorpion", ("scorpion",)),
+    ("eagle", ("eagle",)),
+    ("owl", ("owl",)),
+    ("raven", ("raven", "crow")),
+    ("shark", ("shark",)),
     ("boar", ("wildboar", "wild_boar", "boar")),
     ("pig", ("pig",)),
     ("cow", ("cattle", "cow")),
@@ -250,8 +324,61 @@ MAP_MARKER_ICON_RULES = (
     ("fox", ("fox",)),
     ("chicken", ("hen", "chicken")),
     ("horse", ("horse",)),
+    ("stag", ("stag", "elk", "moose", "reindeer")),
+    ("rat", ("rodent", "rat")),
+    ("mouse", ("mouse", "mice")),
+    ("bat", ("vampirebat", "fruitbat")),
+    ("frog", ("frog", "toad")),
     ("deer", ("roedeer", "roe_deer", "reddeer", "red_deer", "deer")),
 )
+MAP_MARKER_ICON_OPTIONS = (
+    ("Auto", ""),
+    ("No icon", "none"),
+    ("Bear", "bear"),
+    ("Wolf", "wolf"),
+    ("Deer", "deer"),
+    ("Boar", "boar"),
+    ("Pig", "pig"),
+    ("Cow", "cow"),
+    ("Goat", "goat"),
+    ("Sheep", "sheep"),
+    ("Rabbit", "rabbit"),
+    ("Fox", "fox"),
+    ("Chicken", "chicken"),
+    ("Horse", "horse"),
+    ("Infected", "infected"),
+    ("Cat", "cat"),
+    ("Dog", "dog"),
+    ("Rat", "rat"),
+    ("Mouse", "mouse"),
+    ("Bat", "bat"),
+    ("Owl", "owl"),
+    ("Eagle", "eagle"),
+    ("Raven", "raven"),
+    ("Stag / Moose", "stag"),
+    ("Bison", "bison"),
+    ("Buffalo", "buffalo"),
+    ("Lion", "lion"),
+    ("Tiger", "tiger"),
+    ("Hyena", "hyena"),
+    ("Crocodile", "crocodile"),
+    ("Snake", "snake"),
+    ("Frog", "frog"),
+    ("Spider", "spider"),
+    ("Scorpion", "scorpion"),
+    ("Shark", "shark"),
+    ("Fish creature", "fish-monster"),
+    ("Dinosaur", "dinosaur"),
+    ("Dragon", "dragon"),
+    ("Griffin", "griffin"),
+    ("Hydra", "hydra"),
+    ("Werewolf", "werewolf"),
+    ("Vampire", "vampire"),
+    ("Giant", "giant"),
+    ("Monster", "monster"),
+)
+MAP_MARKER_ICON_KEYS = {label: key for label, key in MAP_MARKER_ICON_OPTIONS}
+MAP_MARKER_ICON_LABELS = {key: label for label, key in MAP_MARKER_ICON_OPTIONS}
 
 GRAPHITE_BG = "#24262b"
 GRAPHITE_HEADER = "#1f2126"
@@ -293,6 +420,19 @@ GRAPHITE_ERROR_DARK = "#7f3434"
 MAX_RENDERED_LOG_ISSUES = 750
 EVENT_POSITION_VALUES = ("", "fixed", "player", "uniform")
 EVENT_LIMIT_VALUES = ("", "custom", "child", "parent", "mixed")
+EVENT_FLAG_VALUES = ("", "0", "1")
+EVENT_CREATION_FAMILIES = ("Custom / modded", "Ambient", "Animal", "Infected", "Item", "Static", "Trajectory", "Vehicle", "Loot (exact)")
+EVENT_CREATION_PRESETS = {
+    "Custom / modded": {"name": "", "position": "fixed", "limit": "child", "deletable": "0", "init_random": "0", "remove_damaged": "0"},
+    "Ambient": {"name": "Ambient", "position": "fixed", "limit": "mixed", "deletable": "0", "init_random": "0", "remove_damaged": "1"},
+    "Animal": {"name": "Animal", "position": "fixed", "limit": "child", "deletable": "0", "init_random": "0", "remove_damaged": "1"},
+    "Infected": {"name": "Infected", "position": "player", "limit": "custom", "deletable": "0", "init_random": "0", "remove_damaged": "1"},
+    "Item": {"name": "Item", "position": "fixed", "limit": "child", "deletable": "1", "init_random": "0", "remove_damaged": "0"},
+    "Static": {"name": "Static", "position": "fixed", "limit": "child", "deletable": "1", "init_random": "0", "remove_damaged": "0"},
+    "Trajectory": {"name": "Trajectory", "position": "player", "limit": "mixed", "deletable": "1", "init_random": "0", "remove_damaged": "0"},
+    "Vehicle": {"name": "Vehicle", "position": "fixed", "limit": "mixed", "deletable": "0", "init_random": "0", "remove_damaged": "1"},
+    "Loot (exact)": {"name": "Loot", "position": "fixed", "limit": "custom", "deletable": "0", "init_random": "0", "remove_damaged": "0"},
+}
 EVENT_ACTIVE_VALUES = ("Enabled", "Disabled")
 EVENT_ACTIVE_TO_XML = {"Enabled": "1", "Disabled": "0", "": ""}
 EVENT_XML_TO_ACTIVE = {"1": "Enabled", "0": "Disabled", "": ""}
@@ -471,14 +611,57 @@ MODULE_INFO = {
         "subtitle": "Edit events.xml and inspect event links to spawn positions and territories.",
         "sections": [
             ("Linked files", [
-                "Vehicle and many fixed-position events usually resolve through cfgeventspawns.xml.",
-                "Animal and infected workflows often resolve through cfgenvironment.xml and env territory XML.",
+                "Fixed events usually match cfgeventspawns.xml by exact event name; grouped layouts may also use cfgeventgroups.xml.",
+                "cfgeventspawns.xml stores world X/Z anchors, optional Y and angle, and an optional exact group reference.",
+                "cfgeventgroups.xml stores named multi-object layouts. Child X/Z/Y values are offsets, not world coordinates.",
+                "Animal, Ambient, and Infected workflows can resolve through cfgenvironment.xml and env territory XML.",
+                "Secondary references another event by exact name; child type is an entity classname, not an event reference.",
                 "Disabled events are skipped by relationship validation so inactive templates do not create noise.",
             ]),
             ("Fields", [
-                "Active writes 1 or 0. Disabled means the event is not expected to spawn.",
-                "Position controls placement workflow: fixed, player, uniform, or other CE-supported modes.",
-                "Limit controls how the CE counts the event: custom, child, parent, or mixed.",
+                "Active writes 1 or 0. nominal=0 does not disable an event.",
+                "Nominal, min, max, lifetime, restock, and radii are interpreted by event type, position, and limit mode.",
+                "Position modes are fixed, player, and uniform. Limit modes are child, parent, mixed, and custom.",
+                "AnimalMaxCount and ZombieMaxCount in globals.xml can further cap animal and infected populations.",
+            ]),
+            ("Event names", [
+                "Known official prefix families are Ambient, Animal, Infected, Item, Static, Trajectory, and Vehicle.",
+                "Loot is a special exact event name, not a general Loot prefix family.",
+                "Custom and modded names remain valid; cross-file references must use the exact same name.",
+            ]),
+            ("Children and flags", [
+                "Child min can be a lower bound or selection weight; Ambient and Infected behavior is context-dependent.",
+                "Child lootmin and lootmax are event-loot budgets, not guaranteed cargo counts.",
+                "Empty children can be valid for grouped or secondary-driven events.",
+                "init_random behavior is partly observed rather than fully documented; it does not simply choose a random position.",
+            ]),
+            ("Grouped event details", [
+                "Spawn zone smin/smax and dmin/dmax control static/dynamic secondary-zone counts; r is that zone radius, not event cleanup radius.",
+                "Position and child Y/angle fields are optional. Missing values stay omitted; negative angles and offsets remain unchanged.",
+                "Group-child deloot is independent from lootmin/lootmax. spawnsecondary can be omitted or explicitly disabled for decorative children.",
+                "Terrain defaults may supply missing physical spawn/group files. Creating files here creates mission overrides; it does not merge them through cfgeconomycore.xml.",
+            ]),
+        ],
+    },
+    "environment": {
+        "title": "Environment",
+        "subtitle": "Edit cfgenvironment.xml territory registrations, populations, agents, spawns, and runtime limits.",
+        "sections": [
+            ("Registration flow", [
+                "Top-level file path entries register env territory XML files.",
+                "A territory file usable entry links one named population to a registered file stem without path or .xml.",
+                "Animal, Ambient, and Infected events resolve through the territory name and linked files.",
+            ]),
+            ("Population definitions", [
+                "type selects the controller family, commonly Herd or Ambient.",
+                "behavior selects the DayZ or modded AI group behavior class.",
+                "Agents group weighted variants; spawn configName selects concrete animal, infected, or modded agent classes.",
+            ]),
+            ("Runtime items", [
+                "globalCountMax caps the map-wide population.",
+                "zoneCountMin and zoneCountMax control population created for an active zone.",
+                "playerSpawnRadiusNear and playerSpawnRadiusFar constrain spawning around players.",
+                "Unknown custom elements and attributes are preserved when saving.",
             ]),
         ],
     },
@@ -540,7 +723,8 @@ MODULE_INFO = {
                 "types.xml decides which items can match the prototype/container filters.",
             ]),
             ("Main checks", [
-                "Warnings show missing names, duplicate groups, bad lootmax values, containers without points, filters that match zero loaded Types, and prototypes with no placed map instances.",
+                "Warnings show missing names, duplicate groups, bad lootmax values, containers without points, filters that match zero loaded Types, and mapgrouppos placements without matching prototypes.",
+                "Prototype groups without mapgrouppos placements are valid reusable definitions and do not produce warnings.",
                 "Normal point entries are generic placement positions. dispatch/proxy entries are direct advanced spawns and should be preserved.",
                 "Raw XML is available for now so unknown attributes and unsupported blocks stay intact.",
             ]),
@@ -630,18 +814,29 @@ MODULE_INFO = {
     },
 }
 EVENT_FIELD_TOOLTIPS = {
-    "name": "Event identifier. The prefix controls the workflow, for example Vehicle uses cfgeventspawns.xml while Animal uses cfgenvironment.xml territories.",
-    "nominal": "Target number of active event instances the central economy tries to maintain. Zero can intentionally disable spawning for that event.",
-    "min": "Lower threshold before the economy starts trying to respawn or maintain more instances.",
-    "max": "Upper cap for active instances. Keep it coherent with nominal and min for normal spawning behavior.",
-    "lifetime": "How long an event instance can stay alive before cleanup, in seconds.",
-    "restock": "Delay before the economy may restock this event, in seconds.",
-    "saferadius": "Distance around the event that can block or protect spawning depending on the event workflow.",
-    "distanceradius": "Distance rule used by the event system when placing or evaluating event instances.",
-    "cleanupradius": "Radius used when cleaning up objects tied to the event.",
-    "position": "Placement mode. fixed uses cfgeventspawns.xml positions, player is relative to players, uniform distributes across the map.",
-    "limit": "Counting mode for event limits. custom counts the event itself. child counts spawned child objects against the event. parent uses the parent event limit for related children. mixed combines parent/child counting and is common for grouped or linked event setups.",
-    "active": "Enabled writes <active>1</active>. Disabled writes <active>0</active>; disabled events are skipped by relationship validation.",
+    "name": "Unique event identifier and exact cross-file join key. It is an event name, not necessarily an entity classname.",
+    "nominal": "Target population or budget. Meaning depends on event type; nominal=0 does not mean disabled.",
+    "min": "Lower population bound interpreted through the event's limit mode and spawner implementation.",
+    "max": "Upper population bound interpreted through the event's limit mode and spawner implementation.",
+    "lifetime": "Event controller lifecycle or expiry timer in seconds. It is not always the spawned object's lifetime.",
+    "restock": "Spawner-dependent delay or cooldown used when replenishing or reactivating event population.",
+    "saferadius": "Safety or exclusion radius. Fixed events commonly use it to avoid spawning too close to players.",
+    "distanceradius": "Spawner-specific distance criterion. For ambient zones this is commonly player activation distance.",
+    "cleanupradius": "Cleanup or deactivation proximity. Ambient zones may stay active while players remain inside this radius.",
+    "secondary": "Optional reference to another event name, commonly an infected support event. This is not an entity classname.",
+    "deletable": "Whether CE may delete event-controlled entities during event cleanup. Separate from types.xml lifetime cleanup.",
+    "init_random": "Requests randomized event initialization. Exact behavior is event-controller dependent; it does not simply mean random position.",
+    "remove_damaged": "Controls special removal handling for damaged event children. It does not mean immediate deletion of every damaged object.",
+    "position": "Position strategy: fixed uses predefined positions or zones, player uses player-driven logic, uniform uses distributed placement.",
+    "limit": "Population accounting mode. child, parent, mixed, and custom have event-specific behavior; exact CE algorithms are not fully documented.",
+    "active": "Enabled writes <active>1</active>; Disabled writes <active>0</active>. Use active=0, not nominal=0, to disable an event.",
+}
+EVENT_CHILD_TOOLTIPS = {
+    "type": "Entity classname spawned by this event. This is not another event name; event chaining uses <secondary>.",
+    "min": "Spawner-dependent lower bound or selection weight. Ambient and infected systems may use it as weighting.",
+    "max": "Upper child cap interpreted through event type and limit mode.",
+    "lootmin": "Minimum CE event-loot budget associated with this child; not necessarily cargo inside the entity.",
+    "lootmax": "Maximum CE event-loot budget associated with this child; actual loot also depends on available points and economy state.",
 }
 
 
@@ -860,6 +1055,23 @@ def format_download_size(size):
     if index == 0:
         return f"{int(size)} {units[index]}"
     return f"{size:.1f} {units[index]}"
+
+
+def map_canvas_to_world(canvas_x, canvas_y, offset_x, offset_y, zoom, base_width, base_height, map_width, map_height):
+    if zoom <= 0 or min(base_width, base_height, map_width, map_height) <= 0:
+        return None
+    image_x = (canvas_x - offset_x) / zoom
+    image_y = (canvas_y - offset_y) / zoom
+    if image_x < 0 or image_y < 0 or image_x > base_width or image_y > base_height:
+        return None
+    return image_x / base_width * map_width, (base_height - image_y) / base_height * map_height
+
+
+def format_event_coordinate(value):
+    number = float(value)
+    if abs(number) < 0.0000005:
+        number = 0.0
+    return f"{number:.6f}".rstrip("0").rstrip(".")
 
 
 class ProgressWindow(tk.Toplevel):
@@ -2061,6 +2273,1006 @@ class DuplicateResolverDialog(tk.Toplevel):
         self.destroy()
 
 
+class EventSystemEditor(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.app = parent
+        self.title("Event System Editor")
+        self.geometry("1220x760")
+        self.minsize(980, 620)
+        self.configure(bg=GRAPHITE_BG)
+        self.transient(parent)
+        apply_app_icon(self)
+        self.spawn_iids = {}
+        self.position_iids = {}
+        self.group_iids = {}
+        self.child_iids = {}
+        self.current_spawn_index = None
+        self.current_group_index = None
+        self.zone_vars = {key: tk.StringVar(value="") for key in ("smin", "smax", "dmin", "dmax", "r")}
+        self.build()
+        self.refresh_all()
+        self.after(20, lambda: center_window(self, parent))
+
+    def build(self):
+        shell = ttk.Frame(self, padding=12)
+        shell.pack(fill="both", expand=True)
+        shell.rowconfigure(0, weight=1)
+        shell.columnconfigure(0, weight=1)
+        notebook = ttk.Notebook(shell)
+        notebook.grid(row=0, column=0, sticky="nsew")
+        spawn_page = ttk.Frame(notebook, padding=10)
+        group_page = ttk.Frame(notebook, padding=10)
+        notebook.add(spawn_page, text="Spawn positions")
+        notebook.add(group_page, text="Event groups")
+        self.build_spawn_page(spawn_page)
+        self.build_group_page(group_page)
+        actions = ttk.Frame(shell)
+        actions.grid(row=1, column=0, sticky="e", pady=(10, 0))
+        self.app.make_button(actions, "Save event files", self.app.save_event_files, variant="save")
+        self.app.make_button(actions, "Close", self.destroy)
+
+    def build_spawn_page(self, page):
+        page.rowconfigure(0, weight=1)
+        page.columnconfigure(0, weight=1)
+        panes = ttk.PanedWindow(page, orient="horizontal")
+        panes.grid(row=0, column=0, sticky="nsew")
+        left = ttk.LabelFrame(panes, text="cfgeventspawns.xml events", padding=8)
+        right = ttk.Frame(panes)
+        panes.add(left, weight=2)
+        panes.add(right, weight=4)
+        left.rowconfigure(0, weight=1)
+        left.columnconfigure(0, weight=1)
+        self.spawn_tree = ttk.Treeview(left, columns=("source", "positions", "grouped", "zone"), show="tree headings", selectmode="browse", style="Economy.Treeview")
+        self.spawn_tree.heading("#0", text="Event")
+        for column, label, width in (("source", "Source", 150), ("positions", "Positions", 72), ("grouped", "Grouped", 72), ("zone", "Zone radius", 88)):
+            self.spawn_tree.heading(column, text=label)
+            self.spawn_tree.column(column, width=width, anchor="w" if column == "source" else "e", stretch=column == "source")
+        self.spawn_tree.column("#0", width=220, stretch=True)
+        self.spawn_tree.grid(row=0, column=0, sticky="nsew")
+        self.spawn_tree.bind("<<TreeviewSelect>>", self.on_spawn_select)
+        scroll = ttk.Scrollbar(left, command=self.spawn_tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.spawn_tree.configure(yscrollcommand=scroll.set)
+        buttons = ttk.Frame(left)
+        buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.app.make_button(buttons, "Add event", self.add_spawn_event, variant="add")
+        self.app.make_button(buttons, "Rename", self.rename_spawn_event)
+        self.app.make_button(buttons, "Delete", self.delete_spawn_event, variant="danger")
+
+        right.rowconfigure(1, weight=1)
+        right.columnconfigure(0, weight=1)
+        zone_frame = ttk.LabelFrame(right, text="Dynamic secondary zone", padding=8)
+        zone_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        for column in range(10):
+            zone_frame.columnconfigure(column, weight=1 if column % 2 else 0)
+        labels = (("Static min", "smin"), ("Static max", "smax"), ("Dynamic min", "dmin"), ("Dynamic max", "dmax"), ("Radius", "r"))
+        for index, (label, key) in enumerate(labels):
+            ttk.Label(zone_frame, text=label, style="FieldName.TLabel").grid(row=0, column=index * 2, sticky="w", padx=(0, 5))
+            ttk.Entry(zone_frame, textvariable=self.zone_vars[key], width=9).grid(row=0, column=index * 2 + 1, sticky="ew", padx=(0, 10))
+        zone_actions = ttk.Frame(zone_frame)
+        zone_actions.grid(row=1, column=0, columnspan=10, sticky="e", pady=(8, 0))
+        self.app.make_button(zone_actions, "Apply zone", self.apply_zone, variant="save")
+
+        positions = ttk.LabelFrame(right, text="Candidate positions and group anchors", padding=8)
+        positions.grid(row=1, column=0, sticky="nsew")
+        positions.rowconfigure(0, weight=1)
+        positions.columnconfigure(0, weight=1)
+        columns = ("x", "z", "y", "a", "group", "type")
+        self.position_tree = ttk.Treeview(positions, columns=columns, show="headings", selectmode="browse", style="Economy.Treeview")
+        widths = {"x": 110, "z": 110, "y": 80, "a": 80, "group": 230, "type": 100}
+        for column in columns:
+            self.position_tree.heading(column, text={"a": "Angle"}.get(column, column.upper() if column in {"x", "y", "z"} else column.title()))
+            self.position_tree.column(column, width=widths[column], anchor="w", stretch=column == "group")
+        self.position_tree.grid(row=0, column=0, sticky="nsew")
+        self.position_tree.bind("<Double-Button-1>", lambda _event: self.edit_position())
+        scroll = ttk.Scrollbar(positions, command=self.position_tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.position_tree.configure(yscrollcommand=scroll.set)
+        buttons = ttk.Frame(positions)
+        buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.app.make_button(buttons, "Add position", self.add_position, variant="add")
+        self.app.make_button(buttons, "Place on map", self.add_positions_from_map, variant="add")
+        self.app.make_button(buttons, "Edit", self.edit_position)
+        self.app.make_button(buttons, "Delete", self.delete_position, variant="danger")
+        self.app.make_button(buttons, "Show XML", self.show_spawn_xml)
+
+    def build_group_page(self, page):
+        page.rowconfigure(0, weight=1)
+        page.columnconfigure(0, weight=1)
+        panes = ttk.PanedWindow(page, orient="horizontal")
+        panes.grid(row=0, column=0, sticky="nsew")
+        left = ttk.LabelFrame(panes, text="cfgeventgroups.xml layouts", padding=8)
+        right = ttk.LabelFrame(panes, text="Selected layout children", padding=8)
+        panes.add(left, weight=2)
+        panes.add(right, weight=4)
+        left.rowconfigure(0, weight=1)
+        left.columnconfigure(0, weight=1)
+        self.group_tree = ttk.Treeview(left, columns=("source", "children", "references", "radius"), show="tree headings", selectmode="browse", style="Economy.Treeview")
+        self.group_tree.heading("#0", text="Group")
+        for column, label, width in (("source", "Source", 145), ("children", "Children", 70), ("references", "References", 80), ("radius", "Max offset", 86)):
+            self.group_tree.heading(column, text=label)
+            self.group_tree.column(column, width=width, anchor="w" if column == "source" else "e", stretch=column == "source")
+        self.group_tree.column("#0", width=220, stretch=True)
+        self.group_tree.grid(row=0, column=0, sticky="nsew")
+        self.group_tree.bind("<<TreeviewSelect>>", self.on_group_select)
+        scroll = ttk.Scrollbar(left, command=self.group_tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.group_tree.configure(yscrollcommand=scroll.set)
+        buttons = ttk.Frame(left)
+        buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.app.make_button(buttons, "Add group", self.add_group, variant="add")
+        self.app.make_button(buttons, "Rename", self.rename_group)
+        self.app.make_button(buttons, "Delete", self.delete_group, variant="danger")
+
+        right.rowconfigure(0, weight=1)
+        right.columnconfigure(0, weight=1)
+        columns = ("type", "x", "z", "y", "a", "deloot", "lootmin", "lootmax", "secondary")
+        self.child_tree = ttk.Treeview(right, columns=columns, show="headings", selectmode="browse", style="Economy.Treeview")
+        widths = {"type": 230, "x": 75, "z": 75, "y": 65, "a": 65, "deloot": 65, "lootmin": 70, "lootmax": 70, "secondary": 100}
+        labels = {"a": "Angle", "secondary": "Spawn secondary"}
+        for column in columns:
+            self.child_tree.heading(column, text=labels.get(column, column.title()))
+            self.child_tree.column(column, width=widths[column], anchor="w", stretch=column == "type")
+        self.child_tree.grid(row=0, column=0, sticky="nsew")
+        self.child_tree.bind("<Double-Button-1>", lambda _event: self.edit_child())
+        scroll = ttk.Scrollbar(right, command=self.child_tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.child_tree.configure(yscrollcommand=scroll.set)
+        buttons = ttk.Frame(right)
+        buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.app.make_button(buttons, "Add child", self.add_child, variant="add")
+        self.app.make_button(buttons, "Edit", self.edit_child)
+        self.app.make_button(buttons, "Delete", self.delete_child, variant="danger")
+        self.app.make_button(buttons, "Show XML", self.show_group_xml)
+
+    def prompt_fields(self, title, fields, initial=None, dropdowns=None):
+        result = {}
+        window = tk.Toplevel(self)
+        window.title(title)
+        height = max(260, 105 + len(fields) * 43)
+        window.geometry(f"620x{height}")
+        window.minsize(520, height)
+        window.configure(bg=GRAPHITE_BG)
+        window.transient(self)
+        apply_app_icon(window)
+        frame = ttk.Frame(window, padding=14)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(1, weight=1)
+        variables = {key: tk.StringVar(value=str((initial or {}).get(key, ""))) for _label, key in fields}
+        first_widget = None
+        for row, (label, key) in enumerate(fields):
+            ttk.Label(frame, text=label, style="FieldName.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 10), pady=4)
+            values = list((dropdowns or {}).get(key, ()))
+            if values:
+                widget = ttk.Combobox(frame, textvariable=variables[key], values=values, state="normal", style="TCombobox")
+                self.app.bind_filtering_combobox(widget, values)
+            else:
+                widget = ttk.Entry(frame, textvariable=variables[key])
+            widget.grid(row=row, column=1, sticky="ew", pady=4)
+            first_widget = first_widget or widget
+
+        def submit():
+            result.update({key: variable.get().strip() for key, variable in variables.items()})
+            window.destroy()
+
+        actions = ttk.Frame(frame)
+        actions.grid(row=len(fields), column=0, columnspan=2, sticky="e", pady=(14, 0))
+        self.app.make_button(actions, "Apply", submit, variant="save")
+        self.app.make_button(actions, "Cancel", window.destroy)
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.after(20, lambda: center_window(window, self))
+        window.grab_set()
+        if first_widget is not None:
+            first_widget.focus_set()
+        self.wait_window(window)
+        return result or None
+
+    def selected_spawn(self):
+        selected = self.spawn_tree.selection()
+        index = self.spawn_iids.get(selected[0]) if selected else self.current_spawn_index
+        if index is None or not (0 <= index < len(self.app.event_spawn_groups)):
+            return None
+        self.current_spawn_index = index
+        return self.app.event_spawn_groups[index]
+
+    def selected_group(self):
+        selected = self.group_tree.selection()
+        index = self.group_iids.get(selected[0]) if selected else self.current_group_index
+        if index is None or not (0 <= index < len(self.app.event_group_definitions)):
+            return None
+        self.current_group_index = index
+        return self.app.event_group_definitions[index]
+
+    def selected_position_index(self):
+        selected = self.position_tree.selection()
+        return self.position_iids.get(selected[0]) if selected else None
+
+    def selected_child_index(self):
+        selected = self.child_tree.selection()
+        return self.child_iids.get(selected[0]) if selected else None
+
+    def group_reference_count(self, name):
+        key = name.casefold()
+        return sum(1 for spawn in self.app.event_spawn_groups for position in spawn.positions if position.attributes.get("group", "").strip().casefold() == key)
+
+    def refresh_all(self):
+        self.refresh_spawn_tree()
+        self.refresh_group_tree()
+
+    def refresh_spawn_tree(self):
+        selected_index = self.current_spawn_index
+        self.spawn_tree.delete(*self.spawn_tree.get_children())
+        self.spawn_iids = {}
+        for index, group in enumerate(self.app.event_spawn_groups):
+            iid = f"spawn-{index}"
+            radius = group.zone.attributes.get("r", "") if group.zone is not None else ""
+            self.spawn_tree.insert("", "end", iid=iid, text=group.name, values=(self.app.source_display_name(group.source_path), len(group.positions), group.grouped_position_count(), radius))
+            self.spawn_iids[iid] = index
+        if selected_index is not None and f"spawn-{selected_index}" in self.spawn_tree.get_children():
+            self.spawn_tree.selection_set(f"spawn-{selected_index}")
+            self.on_spawn_select()
+        else:
+            self.current_spawn_index = None
+            self.populate_spawn_detail(None)
+
+    def refresh_group_tree(self):
+        selected_index = self.current_group_index
+        self.group_tree.delete(*self.group_tree.get_children())
+        self.group_iids = {}
+        for index, group in enumerate(self.app.event_group_definitions):
+            iid = f"layout-{index}"
+            self.group_tree.insert("", "end", iid=iid, text=group.name, values=(self.app.source_display_name(group.source_path), len(group.children), self.group_reference_count(group.name), f"{group.max_offset_radius():.2f}"))
+            self.group_iids[iid] = index
+        if selected_index is not None and f"layout-{selected_index}" in self.group_tree.get_children():
+            self.group_tree.selection_set(f"layout-{selected_index}")
+            self.on_group_select()
+        else:
+            self.current_group_index = None
+            self.populate_group_detail(None)
+
+    def on_spawn_select(self, _event=None):
+        selected = self.spawn_tree.selection()
+        self.current_spawn_index = self.spawn_iids.get(selected[0]) if selected else None
+        self.populate_spawn_detail(self.selected_spawn())
+
+    def on_group_select(self, _event=None):
+        selected = self.group_tree.selection()
+        self.current_group_index = self.group_iids.get(selected[0]) if selected else None
+        self.populate_group_detail(self.selected_group())
+
+    def populate_spawn_detail(self, group):
+        for variable in self.zone_vars.values():
+            variable.set("")
+        self.position_tree.delete(*self.position_tree.get_children())
+        self.position_iids = {}
+        if group is None:
+            return
+        if group.zone is not None:
+            for key, variable in self.zone_vars.items():
+                variable.set(group.zone.attributes.get(key, ""))
+        for index, position in enumerate(group.positions):
+            attrs = position.attributes
+            iid = f"position-{index}"
+            group_name = attrs.get("group", "")
+            self.position_tree.insert("", "end", iid=iid, values=(attrs.get("x", ""), attrs.get("z", ""), attrs.get("y", ""), attrs.get("a", ""), group_name, "Group anchor" if group_name else "Direct"))
+            self.position_iids[iid] = index
+
+    def populate_group_detail(self, group):
+        self.child_tree.delete(*self.child_tree.get_children())
+        self.child_iids = {}
+        if group is None:
+            return
+        for index, child in enumerate(group.children):
+            attrs = child.attributes
+            iid = f"group-child-{index}"
+            self.child_tree.insert("", "end", iid=iid, values=(child.type_name, attrs.get("x", ""), attrs.get("z", ""), attrs.get("y", ""), attrs.get("a", ""), attrs.get("deloot", ""), attrs.get("lootmin", ""), attrs.get("lootmax", ""), attrs.get("spawnsecondary", "")))
+            self.child_iids[iid] = index
+
+    def source_index(self, paths, source_path):
+        key = self.app.normalized_path(source_path)
+        return next((index for index, path in enumerate(paths) if self.app.normalized_path(path) == key), 0)
+
+    def mark_changed(self, *source_paths):
+        for path in {path for path in source_paths if path}:
+            self.app.mark_source_dirty(path)
+        self.app.event_spawn_positions = event_spawn_positions_by_name(self.app.event_spawn_groups)
+        self.app.schedule_validation_refresh(delay=450)
+        self.app.refresh_event_table()
+        self.app.update_summary()
+        self.refresh_all()
+
+    def add_spawn_event(self):
+        source_path = self.app.ensure_event_spawn_source_path()
+        if not source_path:
+            return
+        values = self.prompt_fields("Add spawn event", (("Event name", "name"),), dropdowns={"name": sorted({entry.name for entry in self.app.event_entries}, key=str.casefold)})
+        name = str((values or {}).get("name", "")).strip()
+        if not name:
+            return
+        if any(group.name.casefold() == name.casefold() for group in self.app.event_spawn_groups):
+            messagebox.showerror(APP_TITLE, f"Spawn event already exists: {name}", parent=self)
+            return
+        source_index = self.source_index(self.app.event_spawn_source_paths(), source_path)
+        self.app.event_spawn_groups.append(EventSpawnGroup(name, [], ET.Element("event", {"name": name}), source_path, source_index))
+        self.current_spawn_index = len(self.app.event_spawn_groups) - 1
+        self.mark_changed(source_path)
+
+    def rename_spawn_event(self):
+        group = self.selected_spawn()
+        if group is None:
+            return
+        values = self.prompt_fields("Rename spawn event", (("Event name", "name"),), {"name": group.name}, {"name": sorted({entry.name for entry in self.app.event_entries}, key=str.casefold)})
+        name = str((values or {}).get("name", "")).strip()
+        if not name or name == group.name:
+            return
+        if any(candidate is not group and candidate.name.casefold() == name.casefold() for candidate in self.app.event_spawn_groups):
+            messagebox.showerror(APP_TITLE, f"Spawn event already exists: {name}", parent=self)
+            return
+        group.name = name
+        group.element.attrib["name"] = name
+        for position in group.positions:
+            position.event_name = name
+        self.mark_changed(group.source_path)
+
+    def delete_spawn_event(self):
+        group = self.selected_spawn()
+        if group is None or self.current_spawn_index is None:
+            return
+        if not messagebox.askyesno(APP_TITLE, f"Delete spawn definition?\n\n{group.name}\n\nEvent and layout groups remain unchanged.", parent=self):
+            return
+        source_path = group.source_path
+        del self.app.event_spawn_groups[self.current_spawn_index]
+        self.current_spawn_index = None
+        self.mark_changed(source_path)
+
+    def validate_number_fields(self, values, required=(), nonnegative=(), integers=()):
+        for key in required:
+            if not values.get(key, "").strip():
+                raise ValueError(f"{key} is required.")
+        for key, raw in values.items():
+            if not raw or key not in set(required) | set(nonnegative) | {"x", "z", "y", "a", "r", "smin", "smax", "dmin", "dmax", "lootmin", "lootmax"}:
+                continue
+            try:
+                number = int(raw) if key in integers else float(raw)
+                if not math.isfinite(float(number)) or (key in nonnegative and number < 0):
+                    raise ValueError
+            except ValueError as exc:
+                raise ValueError(f"{key} must be {'a non-negative integer' if key in integers else 'a valid number'}.") from exc
+
+    def apply_zone(self):
+        group = self.selected_spawn()
+        if group is None:
+            messagebox.showwarning(APP_TITLE, "Select a spawn event first.", parent=self)
+            return
+        values = {key: variable.get().strip() for key, variable in self.zone_vars.items()}
+        try:
+            self.validate_number_fields(values, nonnegative=set(values))
+            for minimum, maximum in (("smin", "smax"), ("dmin", "dmax")):
+                if values[minimum] and values[maximum] and float(values[minimum]) > float(values[maximum]):
+                    raise ValueError(f"{minimum} cannot exceed {maximum}.")
+        except ValueError as exc:
+            messagebox.showerror(APP_TITLE, str(exc), parent=self)
+            return
+        if not any(values.values()):
+            group.zone = None
+        else:
+            attributes = dict(group.zone.attributes) if group.zone is not None else {}
+            for key, value in values.items():
+                if value:
+                    attributes[key] = value
+                else:
+                    attributes.pop(key, None)
+            element = copy.deepcopy(group.zone.element) if group.zone is not None else ET.Element("zone")
+            element.attrib.clear()
+            element.attrib.update(attributes)
+            group.zone = EventSpawnZone(attributes, element)
+        self.mark_changed(group.source_path)
+
+    def position_values(self, initial=None):
+        if initial is None:
+            initial = {"a": "0"}
+        return self.prompt_fields(
+            "Event spawn position",
+            (("World X", "x"), ("World Z", "z"), ("Y (optional)", "y"), ("Angle (optional)", "a"), ("Event group (optional)", "group")),
+            initial,
+            {"group": sorted({group.name for group in self.app.event_group_definitions}, key=str.casefold)},
+        )
+
+    def add_position(self):
+        group = self.selected_spawn()
+        if group is None:
+            messagebox.showwarning(APP_TITLE, "Select a spawn event first.", parent=self)
+            return
+        values = self.position_values()
+        if not values:
+            return
+        self.append_positions(group, [values], self)
+
+    def append_positions(self, group, position_values, parent):
+        return self.apply_position_changes(group, position_values, {}, parent)
+
+    def apply_position_changes(self, group, position_values, edited_positions, parent):
+        prepared_new = []
+        prepared_edits = {}
+        for values in position_values:
+            try:
+                self.validate_number_fields(values, required={"x", "z"})
+            except ValueError as exc:
+                messagebox.showerror(APP_TITLE, str(exc), parent=parent)
+                return False
+            normalized = dict(values)
+            for key in ("x", "z", "y"):
+                if normalized.get(key, "").strip():
+                    normalized[key] = format_event_coordinate(normalized[key])
+            prepared_new.append({key: value for key, value in normalized.items() if value})
+        for index, values in edited_positions.items():
+            if not (0 <= index < len(group.positions)):
+                continue
+            try:
+                self.validate_number_fields(values, required={"x", "z"})
+            except ValueError as exc:
+                messagebox.showerror(APP_TITLE, str(exc), parent=parent)
+                return False
+            normalized = dict(values)
+            for key in ("x", "z", "y"):
+                if normalized.get(key, "").strip():
+                    normalized[key] = format_event_coordinate(normalized[key])
+            prepared_edits[index] = normalized
+        for index, values in prepared_edits.items():
+            for key in ("x", "z", "y", "a", "group"):
+                group.positions[index].set_attribute(key, values.get(key, ""))
+        for attributes in prepared_new:
+            group.positions.append(EventSpawnPosition(group.name, attributes, group.source_path, group.source_index, ET.Element("pos", attributes)))
+        self.mark_changed(group.source_path)
+        return True
+
+    def add_positions_from_map(self):
+        group = self.selected_spawn()
+        if group is None:
+            messagebox.showwarning(APP_TITLE, "Select a spawn event first.", parent=self)
+            return
+        map_key = self.app.selected_map_key
+        if not map_key:
+            messagebox.showwarning(APP_TITLE, "Choose a map first using the Change map button at the top.", parent=self)
+            return
+
+        map_width, map_height, map_label = self.app.mission_map_size(group.positions, map_key)
+        map_image_path, _image_label, image_source = self.app.resolve_map_image(map_key)
+        if not map_image_path and image_source:
+            self.app.log(f"Map image unavailable: {image_source}", "warning")
+
+        window = tk.Toplevel(self)
+        window.title(f"Place Event Positions - {group.name}")
+        window.geometry("980x820")
+        window.minsize(760, 620)
+        window.configure(bg=GRAPHITE_BG)
+        window.transient(self)
+        apply_app_icon(window)
+
+        outer = ttk.Frame(window, padding=12)
+        outer.pack(fill="both", expand=True)
+        outer.rowconfigure(1, weight=1)
+        outer.columnconfigure(0, weight=1)
+        fields = ttk.LabelFrame(outer, text=map_label, padding=8)
+        fields.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        field_specs = (("World X", "x", 12), ("World Z", "z", 12), ("Y", "y", 9), ("Angle", "a", 9), ("Event group", "group", 22))
+        variables = {key: tk.StringVar(value="0" if key == "a" else "") for _label, key, _width in field_specs}
+        angle_widget = None
+        for index, (label, key, width) in enumerate(field_specs):
+            row = 1 if key == "group" else 0
+            column = 0 if key == "group" else index * 2
+            fields.columnconfigure(column + 1, weight=1 if key == "group" else 0)
+            ttk.Label(fields, text=label, style="FieldName.TLabel").grid(row=row, column=column, sticky="w", padx=(0, 5), pady=3)
+            if key == "group":
+                values = sorted({definition.name for definition in self.app.event_group_definitions}, key=str.casefold)
+                widget = ttk.Combobox(fields, textvariable=variables[key], values=values, state="normal", width=width)
+                self.app.bind_filtering_combobox(widget, values)
+            elif key == "a":
+                widget = ttk.Spinbox(fields, textvariable=variables[key], from_=0, to=359, increment=1, width=width, command=lambda: apply_angle())
+                angle_widget = widget
+            else:
+                widget = ttk.Entry(fields, textvariable=variables[key], width=width)
+            widget.grid(row=row, column=column + 1, columnspan=7 if key == "group" else 1, sticky="ew", padx=(0, 10), pady=3)
+        rotation_actions = ttk.Frame(fields)
+        rotation_actions.grid(row=0, column=8, sticky="w")
+        self.app.make_button(rotation_actions, "-15", lambda: rotate_selected(-15), tooltip="Rotate selected placement 15 degrees counter-clockwise.")
+        self.app.make_button(rotation_actions, "+15", lambda: rotate_selected(15), tooltip="Rotate selected placement 15 degrees clockwise.")
+
+        canvas = tk.Canvas(outer, bg=GRAPHITE_FIELD, highlightthickness=1, highlightbackground=GRAPHITE_BORDER)
+        canvas.grid(row=1, column=0, sticky="nsew")
+        pending = []
+        edited_positions = {}
+        pending_count = tk.StringVar(value="New: 0 | Modified: 0")
+        state = {
+            "zoom": 1.0,
+            "offset_x": 0.0,
+            "offset_y": 0.0,
+            "drag_x": 0,
+            "drag_y": 0,
+            "pan_active": False,
+            "move_active": False,
+            "selected_kind": "",
+            "selected_index": None,
+            "image": None,
+            "tk_image": None,
+            "rendered_image": None,
+            "image_levels": [],
+            "image_backend": "",
+            "render_fast": False,
+            "refine_after_id": None,
+            "base_w": 0.0,
+            "base_h": 0.0,
+            "fitted": False,
+        }
+        if map_image_path:
+            if PIL_AVAILABLE:
+                try:
+                    image = Image.open(map_image_path).convert("RGB")
+                    state["image"] = image
+                    state["image_levels"] = self.app.build_map_image_levels(image)
+                    state["image_backend"] = "pillow"
+                    state["base_w"] = float(image.width)
+                    state["base_h"] = float(image.height)
+                except Exception as exc:
+                    self.app.log(f"Could not load map image {map_image_path}: {exc}", "warning")
+            else:
+                try:
+                    image = tk.PhotoImage(file=map_image_path)
+                    state["tk_image"] = image
+                    state["image_backend"] = "tk"
+                    state["base_w"] = float(image.width())
+                    state["base_h"] = float(image.height())
+                    canvas._map_image_ref = image
+                except tk.TclError as exc:
+                    self.app.log(f"Could not load map image {map_image_path}: {exc}", "warning")
+
+        def base_size():
+            if state["image"] is not None or state["tk_image"] is not None:
+                return state["base_w"], state["base_h"]
+            return 900.0, 900.0
+
+        def fit_map():
+            canvas.update_idletasks()
+            width = max(canvas.winfo_width(), 400)
+            height = max(canvas.winfo_height(), 400)
+            base_w, base_h = base_size()
+            state["zoom"] = 1.0 if state["image_backend"] == "tk" else max(0.05, min(width / base_w, height / base_h) * 0.94)
+            state["offset_x"] = (width - base_w * state["zoom"]) / 2
+            state["offset_y"] = (height - base_h * state["zoom"]) / 2
+            state["fitted"] = True
+
+        def world_to_canvas(x, z):
+            base_w, base_h = base_size()
+            return (
+                state["offset_x"] + (x / map_width) * base_w * state["zoom"],
+                state["offset_y"] + (base_h - (z / map_height) * base_h) * state["zoom"],
+            )
+
+        def format_angle(value):
+            return f"{value:.2f}".rstrip("0").rstrip(".")
+
+        def values_for(kind, index):
+            if kind == "pending":
+                return dict(pending[index])
+            attributes = edited_positions.get(index, group.positions[index].attributes)
+            values = {key: attributes.get(key, "") for key in ("x", "z", "y", "a", "group")}
+            values["a"] = values["a"] or "0"
+            return values
+
+        def field_values():
+            values = {key: variable.get().strip() for key, variable in variables.items()}
+            values["a"] = values["a"] or "0"
+            return values
+
+        def selected_values():
+            kind = state["selected_kind"]
+            index = state["selected_index"]
+            if kind == "pending" and index is not None and 0 <= index < len(pending):
+                return values_for(kind, index)
+            if kind == "existing" and index is not None and 0 <= index < len(group.positions):
+                return values_for(kind, index)
+            return None
+
+        def store_selected(values):
+            kind = state["selected_kind"]
+            index = state["selected_index"]
+            if kind == "pending" and index is not None and 0 <= index < len(pending):
+                pending[index] = dict(values)
+            elif kind == "existing" and index is not None and 0 <= index < len(group.positions):
+                edited_positions[index] = dict(values)
+
+        def select_marker(kind, index):
+            state["selected_kind"] = kind
+            state["selected_index"] = index
+            values = values_for(kind, index)
+            for key, variable in variables.items():
+                variable.set(values.get(key, ""))
+
+        def marker_values():
+            markers = []
+            for index in range(len(group.positions)):
+                values = values_for("existing", index)
+                try:
+                    markers.append(("existing", index, values, float(values["x"]), float(values["z"])))
+                except (KeyError, ValueError):
+                    continue
+            for index, values in enumerate(pending):
+                markers.append(("pending", index, values, float(values["x"]), float(values["z"])))
+            return markers
+
+        def marker_at(canvas_x, canvas_y):
+            closest = None
+            closest_distance = 14.0
+            for kind, index, _values, x, z in reversed(marker_values()):
+                px, py = world_to_canvas(x, z)
+                distance = math.hypot(canvas_x - px, canvas_y - py)
+                if distance <= closest_distance:
+                    closest = (kind, index)
+                    closest_distance = distance
+            return closest
+
+        def draw_marker(kind, index, values, x, z):
+            px, py = world_to_canvas(x, z)
+            selected = state["selected_kind"] == kind and state["selected_index"] == index
+            fill = GRAPHITE_ADD if kind == "pending" else GRAPHITE_MUTED
+            radius = 9 if selected else 7
+            canvas.create_oval(px - radius, py - radius, px + radius, py + radius, fill=fill, outline="#ffffff" if selected else GRAPHITE_FIELD, width=2 if selected else 1)
+            try:
+                angle = math.radians(float(values.get("a", "0") or "0"))
+            except ValueError:
+                angle = 0.0
+            arrow_length = 22 if selected else 17
+            end_x = px + math.sin(angle) * arrow_length
+            end_y = py - math.cos(angle) * arrow_length
+            canvas.create_line(px, py, end_x, end_y, fill="#ffffff", width=3 if selected else 2, arrow="last")
+            if kind == "pending":
+                canvas.create_text(px, py, text=str(index + 1), fill="#ffffff", font=("Segoe UI", 7, "bold"))
+
+        def draw_map():
+            canvas.delete("all")
+            base_w, base_h = base_size()
+            x1 = state["offset_x"]
+            y1 = state["offset_y"]
+            x2 = x1 + base_w * state["zoom"]
+            y2 = y1 + base_h * state["zoom"]
+            canvas.create_rectangle(x1, y1, x2, y2, outline=GRAPHITE_BORDER, fill=GRAPHITE_CARD)
+            self.app.draw_cached_map_image(canvas, state, base_w, base_h)
+            for step in range(9):
+                x = x1 + (x2 - x1) * step / 8
+                y = y1 + (y2 - y1) * step / 8
+                canvas.create_line(x, y1, x, y2, fill=GRAPHITE_BORDER_SOFT)
+                canvas.create_line(x1, y, x2, y, fill=GRAPHITE_BORDER_SOFT)
+            for kind, index, values, x, z in marker_values():
+                draw_marker(kind, index, values, x, z)
+
+        def schedule_draw():
+            if state.get("draw_after_id") is not None:
+                return
+
+            def run_draw():
+                state["draw_after_id"] = None
+                draw_map()
+
+            state["draw_after_id"] = window.after(15, run_draw)
+
+        def schedule_refine():
+            after_id = state.get("refine_after_id")
+            if after_id is not None:
+                try:
+                    window.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+            state["refine_after_id"] = window.after(90, refine)
+
+        def refine():
+            state["refine_after_id"] = None
+            state["render_fast"] = False
+            draw_map()
+
+        def refresh_pending():
+            change_count = len(pending) + len(edited_positions)
+            pending_count.set(f"New: {len(pending)} | Modified: {len(edited_positions)}")
+            apply_button.configure(text=f"Apply changes ({change_count})", state="normal" if change_count else "disabled")
+            draw_map()
+
+        def apply_angle():
+            raw = variables["a"].get().strip() or "0"
+            try:
+                angle = float(raw) % 360
+            except ValueError:
+                return
+            variables["a"].set(format_angle(angle))
+            if selected_values() is not None:
+                values = field_values()
+                store_selected(values)
+                refresh_pending()
+
+        def rotate_selected(delta):
+            try:
+                angle = float(variables["a"].get().strip() or "0")
+            except ValueError:
+                angle = 0.0
+            variables["a"].set(format_angle((angle + delta) % 360))
+            apply_angle()
+
+        def on_mousewheel(event):
+            if state["image_backend"] == "tk":
+                return
+            old_zoom = state["zoom"]
+            new_zoom = max(0.05, min(12.0, old_zoom * (1.12 if event.delta > 0 else 1 / 1.12)))
+            if new_zoom == old_zoom:
+                return
+            state["offset_x"] = event.x - (event.x - state["offset_x"]) * (new_zoom / old_zoom)
+            state["offset_y"] = event.y - (event.y - state["offset_y"]) * (new_zoom / old_zoom)
+            state["zoom"] = new_zoom
+            state["render_fast"] = True
+            draw_map()
+            schedule_refine()
+
+        def place(event):
+            if self.app.territory_event_has_alt(event):
+                state["pan_active"] = True
+                state["drag_x"] = event.x
+                state["drag_y"] = event.y
+                return
+            hit = marker_at(event.x, event.y)
+            if hit is not None:
+                select_marker(*hit)
+                state["move_active"] = True
+                state["drag_x"] = event.x
+                state["drag_y"] = event.y
+                draw_map()
+                return
+            base_w, base_h = base_size()
+            coordinates = map_canvas_to_world(event.x, event.y, state["offset_x"], state["offset_y"], state["zoom"], base_w, base_h, map_width, map_height)
+            if coordinates is None:
+                return
+            values = field_values()
+            values["x"] = format_event_coordinate(coordinates[0])
+            values["z"] = format_event_coordinate(coordinates[1])
+            try:
+                self.validate_number_fields(values, required={"x", "z"})
+            except ValueError as exc:
+                messagebox.showerror(APP_TITLE, str(exc), parent=window)
+                return
+            variables["x"].set(values["x"])
+            variables["z"].set(values["z"])
+            pending.append(values)
+            select_marker("pending", len(pending) - 1)
+            refresh_pending()
+
+        def pan(event):
+            if state["pan_active"]:
+                dx = event.x - state["drag_x"]
+                dy = event.y - state["drag_y"]
+                state["offset_x"] += dx
+                state["offset_y"] += dy
+                state["drag_x"] = event.x
+                state["drag_y"] = event.y
+                canvas.move("all", dx, dy)
+                return
+            if not state["move_active"] or selected_values() is None:
+                return
+            base_w, base_h = base_size()
+            coordinates = map_canvas_to_world(event.x, event.y, state["offset_x"], state["offset_y"], state["zoom"], base_w, base_h, map_width, map_height)
+            if coordinates is None:
+                return
+            values = field_values()
+            values["x"] = format_event_coordinate(coordinates[0])
+            values["z"] = format_event_coordinate(coordinates[1])
+            variables["x"].set(values["x"])
+            variables["z"].set(values["z"])
+            store_selected(values)
+            pending_count.set(f"New: {len(pending)} | Modified: {len(edited_positions)}")
+            apply_button.configure(text=f"Apply changes ({len(pending) + len(edited_positions)})", state="normal")
+            schedule_draw()
+
+        def release(_event):
+            if state["pan_active"]:
+                state["pan_active"] = False
+                draw_map()
+            if state["move_active"]:
+                state["move_active"] = False
+                draw_map()
+
+        def undo():
+            if pending:
+                removed_index = len(pending) - 1
+                pending.pop()
+                if state["selected_kind"] == "pending" and state["selected_index"] == removed_index:
+                    state["selected_kind"] = ""
+                    state["selected_index"] = None
+                refresh_pending()
+
+        def clear():
+            pending.clear()
+            if state["selected_kind"] == "pending":
+                state["selected_kind"] = ""
+                state["selected_index"] = None
+            refresh_pending()
+
+        def reset_edits():
+            edited_positions.clear()
+            if state["selected_kind"] == "existing" and state["selected_index"] is not None:
+                select_marker("existing", state["selected_index"])
+            refresh_pending()
+
+        def submit():
+            if (pending or edited_positions) and self.apply_position_changes(group, pending, edited_positions, window):
+                window.destroy()
+
+        canvas.bind("<Configure>", lambda _event: (fit_map(), draw_map()) if not state["fitted"] else draw_map())
+        canvas.bind("<MouseWheel>", on_mousewheel)
+        canvas.bind("<ButtonPress-1>", place)
+        canvas.bind("<B1-Motion>", pan)
+        canvas.bind("<ButtonRelease-1>", release)
+        if angle_widget is not None:
+            angle_widget.bind("<Return>", lambda _event: apply_angle())
+            angle_widget.bind("<FocusOut>", lambda _event: apply_angle())
+        actions = ttk.Frame(outer)
+        actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        ttk.Label(actions, textvariable=pending_count, style="FieldName.TLabel").pack(side="left")
+        button_frame = ttk.Frame(actions)
+        button_frame.pack(side="right")
+        self.app.make_button(button_frame, "Reset view", lambda: (fit_map(), draw_map()), tooltip="Fit the map into the window.")
+        self.app.make_button(button_frame, "Undo new", undo, tooltip="Remove the last new position.")
+        self.app.make_button(button_frame, "Clear new", clear, tooltip="Remove all new positions.")
+        self.app.make_button(button_frame, "Reset edits", reset_edits, tooltip="Restore moved and rotated existing positions.")
+        apply_button = self.app.make_button(button_frame, "Apply changes (0)", submit, variant="add")
+        apply_button.configure(state="disabled")
+        self.app.make_button(button_frame, "Cancel", window.destroy)
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.after(20, lambda: center_window(window, self))
+        window.after(50, lambda: (fit_map(), draw_map()))
+
+    def edit_position(self):
+        group = self.selected_spawn()
+        index = self.selected_position_index()
+        if group is None or index is None or not (0 <= index < len(group.positions)):
+            return
+        position = group.positions[index]
+        values = self.position_values(position.attributes)
+        if not values:
+            return
+        self.apply_position_changes(group, [], {index: values}, self)
+
+    def delete_position(self):
+        group = self.selected_spawn()
+        index = self.selected_position_index()
+        if group is None or index is None or not (0 <= index < len(group.positions)):
+            return
+        del group.positions[index]
+        self.mark_changed(group.source_path)
+
+    def add_group(self):
+        source_path = self.app.ensure_event_group_source_path()
+        if not source_path:
+            return
+        values = self.prompt_fields("Add event group", (("Group name", "name"),))
+        name = str((values or {}).get("name", "")).strip()
+        if not name:
+            return
+        if any(group.name.casefold() == name.casefold() for group in self.app.event_group_definitions):
+            messagebox.showerror(APP_TITLE, f"Event group already exists: {name}", parent=self)
+            return
+        source_index = self.source_index(self.app.event_group_source_paths(), source_path)
+        self.app.event_group_definitions.append(EventGroupDefinition(name, [], ET.Element("group", {"name": name}), source_path, source_index))
+        self.current_group_index = len(self.app.event_group_definitions) - 1
+        self.mark_changed(source_path)
+
+    def rename_group(self):
+        group = self.selected_group()
+        if group is None:
+            return
+        values = self.prompt_fields("Rename event group", (("Group name", "name"),), {"name": group.name})
+        name = str((values or {}).get("name", "")).strip()
+        if not name or name == group.name:
+            return
+        if any(candidate is not group and candidate.name.casefold() == name.casefold() for candidate in self.app.event_group_definitions):
+            messagebox.showerror(APP_TITLE, f"Event group already exists: {name}", parent=self)
+            return
+        old_name = group.name
+        affected_paths = {group.source_path}
+        group.name = name
+        group.element.attrib["name"] = name
+        for spawn in self.app.event_spawn_groups:
+            for position in spawn.positions:
+                if position.attributes.get("group", "").strip().casefold() == old_name.casefold():
+                    position.set_attribute("group", name)
+                    affected_paths.add(spawn.source_path)
+        self.mark_changed(*affected_paths)
+
+    def delete_group(self):
+        group = self.selected_group()
+        if group is None or self.current_group_index is None:
+            return
+        references = self.group_reference_count(group.name)
+        if references:
+            messagebox.showerror(APP_TITLE, f"Cannot delete {group.name}.\n\nReferenced by {references} spawn position(s). Remove or change those references first.", parent=self)
+            return
+        if not messagebox.askyesno(APP_TITLE, f"Delete event group?\n\n{group.name}", parent=self):
+            return
+        source_path = group.source_path
+        del self.app.event_group_definitions[self.current_group_index]
+        self.current_group_index = None
+        self.mark_changed(source_path)
+
+    def child_values(self, initial=None):
+        classnames = {entry.name for entry in self.app.entries if entry.name}
+        classnames.update(child.type_name for group in self.app.event_group_definitions for child in group.children if child.type_name)
+        return self.prompt_fields(
+            "Event group child",
+            (("Classname", "type"), ("X offset", "x"), ("Z offset", "z"), ("Y offset (optional)", "y"), ("Angle (optional)", "a"), ("DE loot flag (optional)", "deloot"), ("Loot min (optional)", "lootmin"), ("Loot max (optional)", "lootmax"), ("Spawn secondary (optional)", "spawnsecondary")),
+            initial,
+            {"type": sorted(classnames, key=str.casefold), "deloot": ["", "0", "1"], "spawnsecondary": ["", "true", "false", "0", "1"]},
+        )
+
+    def validate_child_values(self, values):
+        if not values.get("type", "").strip():
+            raise ValueError("type is required.")
+        self.validate_number_fields(values, required={"x", "z"}, nonnegative={"lootmin", "lootmax"}, integers={"lootmin", "lootmax"})
+        if values.get("lootmin") and values.get("lootmax") and int(values["lootmin"]) > int(values["lootmax"]):
+            raise ValueError("lootmin cannot exceed lootmax.")
+        if values.get("deloot") not in {"", "0", "1"}:
+            raise ValueError("deloot must be 0, 1, or omitted.")
+        if values.get("spawnsecondary", "").casefold() not in {"", "true", "false", "0", "1"}:
+            raise ValueError("spawnsecondary must be true, false, 0, 1, or omitted.")
+
+    def add_child(self):
+        group = self.selected_group()
+        if group is None:
+            messagebox.showwarning(APP_TITLE, "Select an event group first.", parent=self)
+            return
+        values = self.child_values()
+        if not values:
+            return
+        try:
+            self.validate_child_values(values)
+        except ValueError as exc:
+            messagebox.showerror(APP_TITLE, str(exc), parent=self)
+            return
+        attributes = {key: value for key, value in values.items() if value}
+        group.children.append(EventGroupChild(attributes["type"], attributes, ET.Element("child", attributes)))
+        self.mark_changed(group.source_path)
+
+    def edit_child(self):
+        group = self.selected_group()
+        index = self.selected_child_index()
+        if group is None or index is None or not (0 <= index < len(group.children)):
+            return
+        child = group.children[index]
+        values = self.child_values(child.attributes)
+        if not values:
+            return
+        try:
+            self.validate_child_values(values)
+        except ValueError as exc:
+            messagebox.showerror(APP_TITLE, str(exc), parent=self)
+            return
+        for key in ("type", "x", "z", "y", "a", "deloot", "lootmin", "lootmax", "spawnsecondary"):
+            child.set_attribute(key, values.get(key, ""))
+        self.mark_changed(group.source_path)
+
+    def delete_child(self):
+        group = self.selected_group()
+        index = self.selected_child_index()
+        if group is None or index is None or not (0 <= index < len(group.children)):
+            return
+        del group.children[index]
+        self.mark_changed(group.source_path)
+
+    def show_spawn_xml(self):
+        group = self.selected_spawn()
+        if group is not None:
+            self.app.show_text_window(f"cfgeventspawns.xml - {group.name}", format_event_spawn_group_xml(group))
+
+    def show_group_xml(self):
+        group = self.selected_group()
+        if group is not None:
+            self.app.show_text_window(f"cfgeventgroups.xml - {group.name}", format_event_group_definition_xml(group))
+
+
 class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def __init__(self):
         configure_windows_taskbar_icon()
@@ -2071,6 +3283,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.random_preset_entries = []
         self.event_entries = []
         self.event_spawn_groups = []
+        self.event_group_definitions = []
         self.territory_zones = []
         self.spawnable_issues = []
         self.random_preset_issues = []
@@ -2080,6 +3293,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.original_spawnable_entries: list[SpawnableTypeEntry] = []
         self.original_random_preset_entries = []
         self.original_event_entries = []
+        self.original_event_spawn_groups = []
+        self.original_event_group_definitions = []
         self.original_territory_zones = []
         self.issues = []
         self.validation_issues = []
@@ -2179,6 +3394,21 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.event_iids = {}
         self.event_spawn_positions = {}
         self.event_filter_var = tk.StringVar(value="All")
+        self.environment_path = ""
+        self.environment_root = None
+        self.environment_original_text = ""
+        self.environment_issues = []
+        self.environment_tree = None
+        self.environment_tree_elements = {}
+        self.environment_attribute_tree = None
+        self.environment_attribute_iids = {}
+        self.environment_selected_element = None
+        self.environment_path_var = tk.StringVar(value="No cfgenvironment.xml loaded")
+        self.environment_summary_var = tk.StringVar(value="Open a mission folder to edit environment populations.")
+        self.environment_element_var = tk.StringVar(value="No entry selected")
+        self.environment_attribute_name_var = tk.StringVar(value="")
+        self.environment_attribute_value_var = tk.StringVar(value="")
+        self.environment_explanation_var = tk.StringVar(value="Select an environment entry or attribute to see what it controls.")
         self.territory_path_var = tk.StringVar(value="No territory XML loaded")
         self.territory_summary_var = tk.StringVar(value="Open a mission folder to browse territory zones.")
         self.territory_search_var = tk.StringVar(value="")
@@ -2296,6 +3526,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.territory_ai_usage_var = tk.StringVar(value="Rest")
         self.territory_dynamic_usage_var = tk.StringVar(value="")
         self.territory_add_radius_var = tk.StringVar(value="200")
+        self.territory_icon_var = tk.StringVar(value="Auto")
+        self.territory_icon_combo = None
         self.auto_change_reports_var = tk.BooleanVar(value=bool(self.saved_settings.get("auto_change_reports", True)))
         self.map_manifest_cache = None
         self.map_release_cache = None
@@ -2313,12 +3545,17 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "saferadius": tk.StringVar(value=""),
             "distanceradius": tk.StringVar(value=""),
             "cleanupradius": tk.StringVar(value=""),
+            "secondary": tk.StringVar(value=""),
+            "deletable": tk.StringVar(value=""),
+            "init_random": tk.StringVar(value=""),
+            "remove_damaged": tk.StringVar(value=""),
             "position": tk.StringVar(value=""),
             "limit": tk.StringVar(value=""),
             "active": tk.StringVar(value=""),
         }
-        self.event_child_links_by_parent = {}
-        self.event_child_links_by_child = {}
+        self.event_secondary_links_by_parent = {}
+        self.event_secondary_links_by_secondary = {}
+        self.event_secondary_combo = None
         self.current_event_index: int | None = None
         self.event_sort_column = "event"
         self.event_sort_reverse = False
@@ -2365,6 +3602,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.mapgroupproto_group_iids: dict[str, str] = {}
         self.mapgroupproto_issue_line_targets: dict[int, str] = {}
         self.mapgroupproto_reloading = False
+        self.mapgroupproto_parsed_text = ""
+        self.mapgroupproto_comment_button = None
         self.profile_config_path_var = tk.StringVar(value="No profiles folder attached")
         self.profile_config_status_var = tk.StringVar(value="Add a profiles folder to browse server profile configs.")
         self.profile_config_search_var = tk.StringVar(value="")
@@ -2796,6 +4035,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             ("definitions", "Definitions", "cfglimitsdefinition.xml categories, usages, values, and tags."),
             ("economy_core", "Economy Core", "cfgeconomycore.xml managed class roots, global settings, and extra economy XML files."),
             ("events", "Events", "events.xml and event spawn tooling."),
+            ("environment", "Environment", "cfgenvironment.xml territory registrations, populations, agents, and limits."),
             ("territories", "Territories", "Territory and areaflags tooling."),
             ("ce_zones", "CE Zones", "Usage flags, tier zones, water, and CE Tool map layers."),
             ("mapgroupproto", "Mapgroupproto", "Loot prototype groups, containers, filters, and points."),
@@ -2861,6 +4101,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.refresh_economycore_view()
         elif module_id == "events":
             self.refresh_event_table()
+        elif module_id == "environment":
+            self.refresh_environment_view()
         elif module_id == "territories":
             self.refresh_territory_table()
         elif module_id == "ce_zones":
@@ -3250,13 +4492,15 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.log_analyzer_status_var.set(f"{len(self.log_analyzer_paths)} session file(s) available. Added {added} from {root.name}. Select file(s), then scan.")
 
     def is_supported_log_analyzer_file(self, path):
+        if is_ignored_storage_path(path):
+            return False
         source = Path(path)
         return source.is_file() and source.suffix.lower() in {".rpt", ".adm", ".log", ".txt", ".mdmp"}
 
     def discover_log_analyzer_files(self, root):
         try:
             return sorted(
-                (str(path) for path in Path(root).rglob("*") if self.is_supported_log_analyzer_file(path)),
+                (str(path) for path in iter_files_ignoring_storage(root) if self.is_supported_log_analyzer_file(path)),
                 key=lambda value: value.casefold(),
             )
         except OSError:
@@ -3773,6 +5017,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         ).grid(row=0, column=0, sticky="nw")
 
     def ce_registration_file_type_for_path(self, path):
+        if is_ignored_storage_path(path):
+            return ""
         try:
             root = ET.parse(path).getroot()
         except (OSError, ET.ParseError):
@@ -3796,6 +5042,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         candidates = []
         for folder in self.economycore_folder_choices(economycore_root):
             folder_path = root / Path(*PurePosixPath(folder).parts)
+            if is_ignored_storage_path(folder_path):
+                continue
             if not folder_path.is_dir():
                 continue
             for path in sorted(folder_path.glob("*.xml"), key=lambda item: item.name.casefold()):
@@ -4082,6 +5330,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         return ordered
 
     def extract_official_mission_template(self, archive_path, template_name, output_path):
+        if is_ignored_storage_path(archive_path) or is_ignored_storage_path(output_path):
+            raise OSError("Access blocked: storage_1 is always ignored.")
         target = Path(output_path)
         if target.exists() and not target.is_dir():
             raise OSError(f"Output path exists and is not a folder:\n{target}")
@@ -4538,8 +5788,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         event_actions = ttk.Frame(header, style="Card.TFrame")
         event_actions.grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
         self.make_info_button(event_actions, "events")
+        self.make_button(event_actions, "Add event", self.open_add_event_dialog, variant="add", tooltip="Add a complete event definition to a selected events.xml source.")
+        self.make_button(event_actions, "Event system", self.open_event_system_editor, variant="action", tooltip="Edit cfgeventspawns.xml positions, dynamic zones, cfgeventgroups.xml layouts, and group children.")
         self.make_button(event_actions, "View locations", self.open_selected_event_spawns, variant="action", tooltip="Open cfgeventspawns.xml positions or env territory zones for the selected event.")
         self.make_button(event_actions, "View on Map", self.open_selected_event_spawn_map, variant="action", tooltip="Plot cfgeventspawns.xml positions or env territory zones for the selected event on a coordinate map.")
+        self.make_button(event_actions, "Register territory", self.register_selected_event_environment, variant="add", tooltip="Register a territory XML file and population mapping in cfgenvironment.xml for the selected Animal, Ambient, or Infected event.")
 
         content = ttk.Frame(page)
         content.grid(row=1, column=0, sticky="nsew")
@@ -4560,7 +5813,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         event_filter_combo.bind("<<ComboboxSelected>>", lambda event: self.refresh_event_table())
         self.bind_combobox_open_on_click(event_filter_combo)
 
-        columns = ("source", "family", "nominal", "min", "max", "lifetime", "restock", "active", "position", "limit", "spawns")
+        columns = ("source", "family", "nominal", "min", "max", "lifetime", "restock", "active", "position", "limit", "spawns", "direct", "grouped", "layouts", "secondary")
         self.event_tree = ttk.Treeview(table_frame, columns=columns, show="tree headings", selectmode="browse", style="Economy.Treeview")
         self.event_tree.heading("#0", text="Event", command=lambda: self.sort_event_entries("event"))
         self.event_tree.column("#0", width=230, anchor="w", stretch=True)
@@ -4576,10 +5829,14 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "position": 90,
             "limit": 62,
             "spawns": 70,
+            "direct": 64,
+            "grouped": 72,
+            "layouts": 68,
+            "secondary": 150,
         }
         for column in columns:
             self.event_tree.heading(column, text=column.title(), command=lambda sort_column=column: self.sort_event_entries(sort_column))
-            self.event_tree.column(column, width=widths[column], anchor="w" if column in {"source", "family", "position"} else "e", stretch=column in {"source", "family", "position"})
+            self.event_tree.column(column, width=widths[column], anchor="w" if column in {"source", "family", "position", "secondary"} else "e", stretch=column in {"source", "family", "position", "secondary"})
         self.event_tree.grid(row=1, column=0, sticky="nsew")
         self.event_tree.bind("<<TreeviewSelect>>", self.on_event_select)
         event_scroll = ttk.Scrollbar(table_frame, command=self.event_tree.yview)
@@ -4611,6 +5868,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             ("Safe radius", "saferadius"),
             ("Distance radius", "distanceradius"),
             ("Cleanup radius", "cleanupradius"),
+            ("Secondary event", "secondary"),
+            ("Deletable", "deletable"),
+            ("Init random", "init_random"),
+            ("Remove damaged", "remove_damaged"),
             ("Position", "position"),
             ("Limit", "limit"),
             ("Active", "active"),
@@ -4622,7 +5883,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             label_widget = ttk.Label(event_fields, text=label, style="FieldName.TLabel")
             label_widget.grid(row=row_index, column=column_index, sticky="w", pady=2)
             add_tooltip(label_widget, tooltip)
-            if key == "position":
+            if key == "secondary":
+                entry = ttk.Combobox(event_fields, textvariable=self.event_editor_vars[key], style="TCombobox")
+                self.event_secondary_combo = entry
+                self.bind_combobox_open_on_click(entry)
+            elif key == "position":
                 entry = ttk.Combobox(event_fields, textvariable=self.event_editor_vars[key], state="readonly", values=EVENT_POSITION_VALUES, style="TCombobox")
                 self.bind_combobox_open_on_click(entry)
             elif key == "limit":
@@ -4631,14 +5896,18 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             elif key == "active":
                 entry = ttk.Combobox(event_fields, textvariable=self.event_editor_vars[key], state="readonly", values=EVENT_ACTIVE_VALUES, style="TCombobox")
                 self.bind_combobox_open_on_click(entry)
+            elif key in {"deletable", "init_random", "remove_damaged"}:
+                entry = ttk.Combobox(event_fields, textvariable=self.event_editor_vars[key], state="readonly", values=EVENT_FLAG_VALUES, style="TCombobox")
+                self.bind_combobox_open_on_click(entry)
             else:
                 entry = ttk.Entry(event_fields, textvariable=self.event_editor_vars[key])
             entry.grid(row=row_index, column=column_index + 1, sticky="ew", padx=(8, 12), pady=2)
             add_tooltip(entry, tooltip)
         event_editor_buttons = ttk.Frame(event_fields, style="Card.TFrame")
-        event_editor_buttons.grid(row=6, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        event_editor_buttons.grid(row=8, column=0, columnspan=4, sticky="w", pady=(10, 0))
         self.make_button(event_editor_buttons, "Apply event", self.apply_selected_event, variant="save", tooltip="Apply event field changes to the in-memory working set.")
         self.make_button(event_editor_buttons, "Show XML entry", self.show_selected_event_xml, tooltip="Open this event's XML in a separate preview window.")
+        self.make_button(event_editor_buttons, "Delete event", self.delete_selected_event_definition, variant="danger", tooltip="Delete the selected event, optionally with its linked cfgeventspawns definition. Layout groups are never deleted automatically.")
 
         relationship_frame = ttk.LabelFrame(detail_frame, text="Relationship", padding=8)
         relationship_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
@@ -4664,12 +5933,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         relationship_scroll.grid(row=0, column=1, sticky="ns")
         self.event_relationship_text.configure(yscrollcommand=relationship_scroll.set, state="disabled")
 
-        child_frame = ttk.LabelFrame(detail_frame, text="Child events", padding=8)
+        child_frame = ttk.LabelFrame(detail_frame, text="Child entities", padding=8)
         child_frame.grid(row=2, column=0, sticky="nsew")
         child_frame.columnconfigure(0, weight=1)
         child_frame.rowconfigure(0, weight=1)
         self.event_child_tree = ttk.Treeview(child_frame, columns=("attrs",), show="tree headings", height=4, selectmode="extended", style="Economy.Treeview")
-        self.event_child_tree.heading("#0", text="Child event")
+        self.event_child_tree.heading("#0", text="Child classname")
         self.event_child_tree.heading("attrs", text="Attributes")
         self.event_child_tree.column("#0", width=190, anchor="w", stretch=True)
         self.event_child_tree.column("attrs", width=260, anchor="w", stretch=True)
@@ -4679,10 +5948,630 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.event_child_tree.configure(yscrollcommand=child_scroll.set)
         child_actions = ttk.Frame(child_frame, style="Card.TFrame")
         child_actions.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        self.make_button(child_actions, "Add child", self.add_event_child, variant="add", tooltip="Add a child event reference to the selected event.")
-        self.make_button(child_actions, "Remove selected", self.remove_selected_event_children, variant="danger", tooltip="Remove selected child event references from this event.")
+        self.make_button(child_actions, "Add child", self.add_event_child, variant="add", tooltip="Add an entity classname controlled or spawned by this event.")
+        self.make_button(child_actions, "Remove selected", self.remove_selected_event_children, variant="danger", tooltip="Remove selected child entity definitions from this event.")
 
         self.refresh_event_table()
+
+    def build_environment_module(self):
+        page = ttk.Frame(self.module_content)
+        page.grid(row=0, column=0, sticky="nsew")
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(1, weight=1)
+        self.module_pages["environment"] = page
+
+        header = ttk.LabelFrame(page, text="cfgenvironment.xml", padding=12)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, textvariable=self.environment_path_var, style="FieldMuted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(header, textvariable=self.environment_summary_var, style="FieldMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        header_actions = ttk.Frame(header, style="Card.TFrame")
+        header_actions.grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
+        self.make_info_button(header_actions, "environment")
+        self.make_button(header_actions, "Create file", self.create_environment_file, variant="add", tooltip="Create cfgenvironment.xml in the open mission folder when it is missing.")
+        self.make_button(header_actions, "Save Environment", self.save_original, variant="save", tooltip="Save cfgenvironment.xml with validation and backup protection.")
+
+        content = ttk.Frame(page)
+        content.grid(row=1, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=3)
+        content.columnconfigure(1, weight=2)
+        content.rowconfigure(0, weight=1)
+
+        tree_frame = ttk.LabelFrame(content, text="Environment entries", padding=10)
+        tree_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(2, weight=1)
+
+        actions_1 = ttk.Frame(tree_frame, style="Card.TFrame")
+        actions_1.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        self.make_button(actions_1, "Add file", self.add_environment_file, variant="add", tooltip="Register an env territory XML path.")
+        self.make_button(actions_1, "Add territory", self.add_environment_territory, variant="add", tooltip="Add a named environment population and link it to a registered territory file.")
+        self.make_button(actions_1, "Link file", self.add_environment_usable_file, tooltip="Add a usable territory-file link to the selected population.")
+
+        actions_2 = ttk.Frame(tree_frame, style="Card.TFrame")
+        actions_2.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.make_button(actions_2, "Add agent", self.add_environment_agent, variant="add", tooltip="Add a weighted agent variant to the selected territory.")
+        self.make_button(actions_2, "Add spawn", self.add_environment_spawn, variant="add", tooltip="Add a concrete agent classname to the selected agent.")
+        self.make_button(actions_2, "Add item", self.add_environment_item, variant="add", tooltip="Add a runtime setting to the selected territory or agent.")
+        self.make_button(actions_2, "Delete selected", self.delete_environment_element, variant="danger", tooltip="Delete the selected environment entry.")
+
+        self.environment_tree = ttk.Treeview(tree_frame, columns=("kind", "details"), show="tree headings", selectmode="browse", style="Economy.Treeview")
+        self.environment_tree.heading("#0", text="Entry")
+        self.environment_tree.heading("kind", text="Kind")
+        self.environment_tree.heading("details", text="Values")
+        self.environment_tree.column("#0", width=230, minwidth=150, stretch=True)
+        self.environment_tree.column("kind", width=90, minwidth=70, stretch=False)
+        self.environment_tree.column("details", width=360, minwidth=180, stretch=True)
+        self.environment_tree.grid(row=2, column=0, sticky="nsew")
+        self.environment_tree.bind("<<TreeviewSelect>>", self.on_environment_select)
+        environment_scroll = ttk.Scrollbar(tree_frame, command=self.environment_tree.yview)
+        environment_scroll.grid(row=2, column=1, sticky="ns")
+        environment_x_scroll = ttk.Scrollbar(tree_frame, command=self.environment_tree.xview, orient="horizontal")
+        environment_x_scroll.grid(row=3, column=0, sticky="ew")
+        self.environment_tree.configure(yscrollcommand=environment_scroll.set, xscrollcommand=environment_x_scroll.set)
+
+        detail = ttk.LabelFrame(content, text="Selected entry", padding=10)
+        detail.grid(row=0, column=1, sticky="nsew")
+        detail.columnconfigure(0, weight=1)
+        detail.rowconfigure(2, weight=1)
+        detail.rowconfigure(5, weight=1)
+        ttk.Label(detail, textvariable=self.environment_element_var, style="FieldName.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(detail, textvariable=self.environment_explanation_var, style="FieldMuted.TLabel", wraplength=480, justify="left").grid(row=1, column=0, sticky="ew", pady=(4, 8))
+
+        self.environment_attribute_tree = ttk.Treeview(detail, columns=("value", "meaning"), show="tree headings", selectmode="browse", height=7, style="Economy.Treeview")
+        self.environment_attribute_tree.heading("#0", text="Attribute")
+        self.environment_attribute_tree.heading("value", text="Value")
+        self.environment_attribute_tree.heading("meaning", text="Meaning")
+        self.environment_attribute_tree.column("#0", width=110, minwidth=80, stretch=False)
+        self.environment_attribute_tree.column("value", width=170, minwidth=100, stretch=True)
+        self.environment_attribute_tree.column("meaning", width=280, minwidth=160, stretch=True)
+        self.environment_attribute_tree.grid(row=2, column=0, sticky="nsew")
+        self.environment_attribute_tree.bind("<<TreeviewSelect>>", self.on_environment_attribute_select)
+
+        attribute_editor = ttk.Frame(detail, style="Card.TFrame")
+        attribute_editor.grid(row=3, column=0, sticky="ew", pady=(8, 6))
+        attribute_editor.columnconfigure(1, weight=1)
+        ttk.Label(attribute_editor, text="Name", style="FieldName.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Entry(attribute_editor, textvariable=self.environment_attribute_name_var, width=16).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        ttk.Label(attribute_editor, text="Value", style="FieldName.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(6, 0))
+        ttk.Entry(attribute_editor, textvariable=self.environment_attribute_value_var).grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=(6, 0))
+        attribute_actions = ttk.Frame(attribute_editor, style="Card.TFrame")
+        attribute_actions.grid(row=0, column=2, rowspan=2, sticky="e")
+        self.make_button(attribute_actions, "Apply", self.apply_environment_attribute, variant="save", tooltip="Add or update this attribute on the selected entry.")
+        self.make_button(attribute_actions, "Remove", self.remove_environment_attribute, variant="danger", tooltip="Remove the selected attribute.")
+
+        ttk.Label(detail, text="Selected XML", style="FieldName.TLabel").grid(row=4, column=0, sticky="w", pady=(4, 4))
+        self.environment_preview_text = tk.Text(detail, height=8, wrap="none", bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, font=("Consolas", 9))
+        self.environment_preview_text.grid(row=5, column=0, sticky="nsew")
+        self.environment_preview_text.configure(state="disabled")
+
+        self.refresh_environment_view()
+
+    def environment_source_path(self):
+        if self.environment_path:
+            return self.environment_path
+        if self.mission_workspace is None:
+            return ""
+        paths = list(getattr(self.mission_workspace, "cfgenvironment_paths", []))
+        return paths[0] if paths else str(Path(self.mission_workspace.root_path) / "cfgenvironment.xml")
+
+    def load_environment_config(self):
+        self.environment_path = ""
+        self.environment_root = None
+        self.environment_original_text = ""
+        self.environment_issues = []
+        if self.mission_workspace is None:
+            return
+        path = self.environment_source_path()
+        self.environment_path = path
+        if not Path(path).is_file():
+            return
+        root, issues = parse_cfgenvironment_document(path)
+        self.environment_root = root
+        self.environment_issues = list(issues)
+        if root is not None:
+            self.environment_original_text = format_cfgenvironment_xml(root)
+            self.sync_environment_workspace_links()
+
+    def ensure_environment_document(self):
+        if self.environment_root is not None:
+            return True
+        if self.mission_workspace is None:
+            messagebox.showwarning(APP_TITLE, "Open a mission folder first.")
+            return False
+        self.environment_path = str(Path(self.mission_workspace.root_path) / "cfgenvironment.xml")
+        self.environment_root = ET.Element("env")
+        ET.SubElement(self.environment_root, "territories")
+        self.environment_original_text = ""
+        if self.environment_path not in self.mission_workspace.cfgenvironment_paths:
+            self.mission_workspace.cfgenvironment_paths.append(self.environment_path)
+        return True
+
+    def create_environment_file(self):
+        if self.environment_root is not None:
+            messagebox.showinfo(APP_TITLE, "cfgenvironment.xml is already loaded.")
+            return
+        if not self.ensure_environment_document():
+            return
+        self.finish_environment_edit("Created cfgenvironment.xml. Add territory files and populations, then save.")
+
+    def environment_territories_element(self, create=False):
+        if self.environment_root is None:
+            return None
+        territories = self.environment_root.find("territories")
+        if territories is None and create:
+            territories = ET.SubElement(self.environment_root, "territories")
+        return territories
+
+    def environment_parent_element(self, target):
+        if self.environment_root is None or target is self.environment_root:
+            return None
+        for parent in self.environment_root.iter():
+            if target in list(parent):
+                return parent
+        return None
+
+    def environment_ancestor_element(self, element, tag):
+        current = element
+        while current is not None:
+            if current.tag == tag:
+                return current
+            current = self.environment_parent_element(current)
+        return None
+
+    def environment_element_label(self, element):
+        tag = element.tag if isinstance(element.tag, str) else "comment"
+        if tag == "env":
+            return "Environment"
+        if tag == "territories":
+            return "Territories"
+        if tag == "territory":
+            return element.attrib.get("name", "Unnamed territory")
+        if tag == "file":
+            return element.attrib.get("path") or element.attrib.get("usable") or "Unnamed file"
+        if tag == "agent":
+            return element.attrib.get("type", "Unnamed agent")
+        if tag == "spawn":
+            return element.attrib.get("configName", "Unnamed spawn")
+        if tag == "item":
+            return element.attrib.get("name", "Unnamed item")
+        return f"<{tag}>"
+
+    def environment_element_details(self, element):
+        return ", ".join(f"{key}={value}" for key, value in element.attrib.items())
+
+    def environment_element_explanation(self, element):
+        tag = element.tag if isinstance(element.tag, str) else ""
+        text = ENVIRONMENT_ELEMENT_EXPLANATIONS.get(tag, "Custom environment element. It will be preserved when saving.")
+        if tag == "item":
+            item_name = element.attrib.get("name", "").casefold()
+            item_text = ENVIRONMENT_ITEM_EXPLANATIONS.get(item_name)
+            if item_text:
+                text = f"{text} {item_text}"
+        return text
+
+    def environment_attribute_explanation(self, element, attribute):
+        tag = element.tag if isinstance(element.tag, str) else ""
+        text = ENVIRONMENT_ATTRIBUTE_EXPLANATIONS.get((tag, attribute), "Custom attribute. Verify its meaning with the mod or server configuration that defines it.")
+        if tag == "item" and attribute in {"name", "val"}:
+            item_text = ENVIRONMENT_ITEM_EXPLANATIONS.get(element.attrib.get("name", "").casefold())
+            if item_text:
+                text = f"{text} {item_text}"
+        return text
+
+    def refresh_environment_view(self):
+        if self.environment_tree is None:
+            return
+        selected_element = self.environment_selected_element
+        self.environment_tree.delete(*self.environment_tree.get_children())
+        self.environment_tree_elements = {}
+        path = self.environment_source_path()
+        self.environment_path_var.set(self.source_display_name(path) if path and self.environment_root is not None else "No cfgenvironment.xml loaded")
+        root = self.environment_root
+        if root is None:
+            self.environment_summary_var.set("Open a mission folder or create cfgenvironment.xml.")
+            self.clear_environment_detail()
+            return
+
+        territories = root.find("territories")
+        top_files = territories.findall("file") if territories is not None else []
+        definitions = territories.findall("territory") if territories is not None else []
+        agents = territories.findall(".//agent") if territories is not None else []
+        spawns = territories.findall(".//spawn") if territories is not None else []
+        self.environment_summary_var.set(f"{len(top_files)} registered file(s), {len(definitions)} territory definition(s), {len(agents)} agent group(s), {len(spawns)} spawn class(es).")
+        selected_iid = ""
+        sequence = 0
+
+        def add_element(element, parent_iid=""):
+            nonlocal sequence, selected_iid
+            if not isinstance(element.tag, str):
+                return
+            iid = f"environment-{sequence}"
+            sequence += 1
+            tag = element.tag
+            self.environment_tree.insert(parent_iid, "end", iid=iid, text=self.environment_element_label(element), values=(tag, self.environment_element_details(element)), open=tag in {"env", "territories", "territory"})
+            self.environment_tree_elements[iid] = element
+            if element is selected_element:
+                selected_iid = iid
+            for child in list(element):
+                add_element(child, iid)
+
+        add_element(root)
+        if selected_iid:
+            self.environment_tree.selection_set(selected_iid)
+            self.environment_tree.see(selected_iid)
+            self.populate_environment_detail(selected_element)
+        else:
+            root_iid = next(iter(self.environment_tree_elements), "")
+            if root_iid:
+                self.environment_tree.selection_set(root_iid)
+                self.populate_environment_detail(root)
+
+    def clear_environment_detail(self):
+        self.environment_selected_element = None
+        self.environment_element_var.set("No entry selected")
+        self.environment_explanation_var.set("Select an environment entry or attribute to see what it controls.")
+        self.environment_attribute_name_var.set("")
+        self.environment_attribute_value_var.set("")
+        if self.environment_attribute_tree is not None:
+            self.environment_attribute_tree.delete(*self.environment_attribute_tree.get_children())
+        if getattr(self, "environment_preview_text", None) is not None:
+            self.environment_preview_text.configure(state="normal")
+            self.environment_preview_text.delete("1.0", "end")
+            self.environment_preview_text.configure(state="disabled")
+
+    def populate_environment_detail(self, element):
+        if element is None:
+            self.clear_environment_detail()
+            return
+        self.environment_selected_element = element
+        tag = element.tag if isinstance(element.tag, str) else "comment"
+        self.environment_element_var.set(f"{self.environment_element_label(element)}  <{tag}>")
+        self.environment_explanation_var.set(self.environment_element_explanation(element))
+        self.environment_attribute_name_var.set("")
+        self.environment_attribute_value_var.set("")
+        self.environment_attribute_tree.delete(*self.environment_attribute_tree.get_children())
+        self.environment_attribute_iids = {}
+        for index, (name, value) in enumerate(element.attrib.items()):
+            iid = f"environment-attribute-{index}"
+            meaning = self.environment_attribute_explanation(element, name)
+            self.environment_attribute_tree.insert("", "end", iid=iid, text=name, values=(value, meaning))
+            self.environment_attribute_iids[iid] = name
+        preview = copy.deepcopy(element)
+        ET.indent(preview, space="    ")
+        text = ET.tostring(preview, encoding="unicode", short_empty_elements=True)
+        self.environment_preview_text.configure(state="normal")
+        self.environment_preview_text.delete("1.0", "end")
+        self.environment_preview_text.insert("1.0", text)
+        self.environment_preview_text.configure(state="disabled")
+
+    def on_environment_select(self, event=None):
+        selected = self.environment_tree.selection() if self.environment_tree is not None else ()
+        element = self.environment_tree_elements.get(selected[0]) if selected else None
+        self.populate_environment_detail(element)
+
+    def on_environment_attribute_select(self, event=None):
+        selected = self.environment_attribute_tree.selection() if self.environment_attribute_tree is not None else ()
+        attribute = self.environment_attribute_iids.get(selected[0]) if selected else ""
+        element = self.environment_selected_element
+        if not attribute or element is None:
+            return
+        self.environment_attribute_name_var.set(attribute)
+        self.environment_attribute_value_var.set(element.attrib.get(attribute, ""))
+        self.environment_explanation_var.set(self.environment_attribute_explanation(element, attribute))
+
+    def sync_environment_workspace_links(self):
+        if self.mission_workspace is None or self.environment_root is None:
+            return
+        territory_paths, territory_map, issues = environment_links_from_root(self.environment_root, self.mission_workspace.root_path, self.environment_source_path())
+        self.mission_workspace.environment_territory_paths = territory_map
+        for path in territory_paths:
+            self.add_territory_source_path(path)
+        self.environment_issues = issues
+        self.mark_territory_related_event_cache_stale()
+
+    def finish_environment_edit(self, message, selected_element=None):
+        if selected_element is not None:
+            self.environment_selected_element = selected_element
+        self.sync_environment_workspace_links()
+        self.mark_source_dirty(self.environment_source_path())
+        self.mark_module_views_stale("events", "territories", "environment")
+        self.refresh_environment_view()
+        self.schedule_validation_refresh(delay=1200)
+        self.update_summary()
+        self.log(message, "success")
+
+    def apply_environment_attribute(self):
+        element = self.environment_selected_element
+        if element is None:
+            messagebox.showwarning(APP_TITLE, "Select an environment entry first.")
+            return
+        name = self.environment_attribute_name_var.get().strip()
+        value = self.environment_attribute_value_var.get().strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.:-]*", name):
+            messagebox.showwarning(APP_TITLE, "Enter a valid XML attribute name.")
+            return
+        element.set(name, value)
+        self.finish_environment_edit(f"Updated environment attribute {name}.", element)
+
+    def remove_environment_attribute(self):
+        element = self.environment_selected_element
+        name = self.environment_attribute_name_var.get().strip()
+        if element is None or not name or name not in element.attrib:
+            messagebox.showwarning(APP_TITLE, "Select an existing environment attribute first.")
+            return
+        element.attrib.pop(name, None)
+        self.finish_environment_edit(f"Removed environment attribute {name}.", element)
+
+    def prompt_environment_fields(self, title, fields, required=()):
+        window = tk.Toplevel(self)
+        window.title(title)
+        window.configure(bg=GRAPHITE_BG)
+        window.transient(self)
+        window.grab_set()
+        window.resizable(True, False)
+        window.minsize(540, max(250, 115 + len(fields) * 55))
+        apply_app_icon(window)
+        body = ttk.Frame(window, padding=14)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        variables = {}
+        for row, (label, key, default, choices, explanation) in enumerate(fields):
+            variables[key] = tk.StringVar(value=default)
+            ttk.Label(body, text=label, style="FieldName.TLabel").grid(row=row * 2, column=0, sticky="w", padx=(0, 10), pady=(0, 4))
+            if choices:
+                widget = ttk.Combobox(body, textvariable=variables[key], values=choices, state="normal", style="TCombobox")
+                self.bind_combobox_open_on_click(widget)
+            else:
+                widget = ttk.Entry(body, textvariable=variables[key])
+            widget.grid(row=row * 2, column=1, sticky="ew", pady=(0, 4))
+            ttk.Label(body, text=explanation, style="FieldMuted.TLabel", wraplength=430, justify="left").grid(row=row * 2 + 1, column=1, sticky="ew", pady=(0, 8))
+        result = {"values": None}
+
+        def submit():
+            values = {key: variable.get().strip() for key, variable in variables.items()}
+            missing = [key for key in required if not values.get(key)]
+            if missing:
+                messagebox.showwarning(APP_TITLE, f"Required field is empty: {missing[0]}", parent=window)
+                return
+            result["values"] = values
+            window.destroy()
+
+        actions = ttk.Frame(body)
+        actions.grid(row=len(fields) * 2, column=0, columnspan=2, sticky="e", pady=(6, 0))
+        self.make_button(actions, "Cancel", window.destroy)
+        self.make_button(actions, "Add", submit, variant="add")
+        window.after(20, lambda: center_window(window))
+        self.wait_window(window)
+        return result["values"]
+
+    def environment_registered_file_values(self):
+        territories = self.environment_territories_element()
+        if territories is None:
+            return []
+        return [element.attrib.get("path", "") for element in territories.findall("file") if element.attrib.get("path", "").strip()]
+
+    def environment_relative_territory_path(self, source_path):
+        if self.mission_workspace is None:
+            return str(source_path).replace("\\", "/")
+        root = Path(self.mission_workspace.root_path)
+        try:
+            return Path(source_path).resolve().relative_to(root.resolve()).as_posix()
+        except (OSError, ValueError):
+            return str(source_path).replace("\\", "/")
+
+    def add_environment_file(self, source_path=""):
+        if not self.ensure_environment_document():
+            return False
+        if not source_path:
+            initial_dir = str(Path(self.mission_workspace.root_path) / "env") if self.mission_workspace is not None else self.saved_settings.get("last_dir", str(Path.home()))
+            source_path = filedialog.askopenfilename(title="Choose territory XML file", filetypes=[("Territory XML", "*_territories.xml"), ("XML files", "*.xml")], initialdir=initial_dir, parent=self)
+        if not source_path:
+            return False
+        path_value = self.environment_relative_territory_path(source_path)
+        territories = self.environment_territories_element(create=True)
+        existing = {element.attrib.get("path", "").replace("\\", "/").casefold() for element in territories.findall("file")}
+        if path_value.casefold() in existing:
+            return True
+        element = ET.Element("file", {"path": path_value})
+        insert_at = next((index for index, child in enumerate(list(territories)) if child.tag == "territory"), len(territories))
+        territories.insert(insert_at, element)
+        self.finish_environment_edit(f"Registered environment territory file: {path_value}", element)
+        return True
+
+    def environment_registration_defaults(self, source_path, event_name=""):
+        stem = Path(source_path).stem
+        base = re.sub(r"_?territories$", "", stem, flags=re.IGNORECASE)
+        name = event_name.strip()
+        family = ""
+        if name:
+            family, _description, _target = classify_event_name(name)
+            for prefix in ("Animal", "Ambient", "Infected"):
+                if name.casefold().startswith(prefix.casefold()):
+                    name = name[len(prefix):] or name
+                    break
+        if not name:
+            name = "".join(part.capitalize() for part in re.split(r"[_\-]+", base) if part)
+        territory_type = "Ambient" if family == "Ambient" else "Herd"
+        key = f"{name} {base}".casefold()
+        if "bear" in key:
+            behavior = "BlissBearGroupBeh"
+        elif "wolf" in key:
+            behavior = "DZWolfGroupBeh"
+        elif family == "Ambient" or any(value in key for value in ("hen", "hare", "fox")):
+            behavior = "DZAmbientLifeGroupBeh"
+        elif any(value in key for value in ("sheep", "goat", "pig", "cow", "cattle")):
+            behavior = "DZSheepGroupBeh" if "cow" not in key and "cattle" not in key else "DZdomesticGroupBeh"
+        else:
+            behavior = "DZDeerGroupBeh"
+        return name, territory_type, behavior
+
+    def prompt_environment_registration(self, source_path, event_name=""):
+        registered_paths = self.environment_registered_file_values()
+        path_value = self.environment_relative_territory_path(source_path)
+        choices = sorted(set(registered_paths + [path_value]), key=str.casefold)
+        name, territory_type, behavior = self.environment_registration_defaults(source_path, event_name)
+        return self.prompt_environment_fields(
+            "Register Environment Territory",
+            (
+                ("Territory file", "path", path_value, choices, "Mission-relative env territory XML path."),
+                ("Population name", "name", name, (), "Name used to connect Animal, Ambient, or Infected events."),
+                ("Type", "type", territory_type, ("Herd", "Ambient"), "Population controller type."),
+                ("Behavior", "behavior", behavior, ("DZDeerGroupBeh", "DZWolfGroupBeh", "DZSheepGroupBeh", "DZdomesticGroupBeh", "DZAmbientLifeGroupBeh", "BlissBearGroupBeh"), "DayZ or modded AI group behavior class."),
+            ),
+            required=("path", "name", "type", "behavior"),
+        )
+
+    def register_territory_source_in_environment(self, source_path, event_name=""):
+        if not self.ensure_environment_document():
+            return False
+        values = self.prompt_environment_registration(source_path, event_name)
+        if not values:
+            return False
+        self.add_environment_file(source_path)
+        territories = self.environment_territories_element(create=True)
+        name_key = values["name"].casefold()
+        existing = next((element for element in territories.findall("territory") if element.attrib.get("name", "").casefold() == name_key), None)
+        usable = Path(values["path"].replace("\\", "/")).stem
+        if existing is None:
+            existing = ET.SubElement(territories, "territory", {"type": values["type"], "name": values["name"], "behavior": values["behavior"]})
+        else:
+            existing.attrib.update({"type": values["type"], "name": values["name"], "behavior": values["behavior"]})
+        if not any(Path(file_element.attrib.get("usable", "")).stem.casefold() == usable.casefold() for file_element in existing.findall("file")):
+            existing.insert(0, ET.Element("file", {"usable": usable}))
+        self.finish_environment_edit(f"Registered {values['name']} in cfgenvironment.xml.", existing)
+        return True
+
+    def select_environment_territory(self, names):
+        name_keys = {str(name).casefold() for name in names if str(name).strip()}
+        self.switch_module("environment")
+        self.refresh_environment_view()
+        for iid, element in self.environment_tree_elements.items():
+            if element.tag == "territory" and element.attrib.get("name", "").casefold() in name_keys:
+                self.environment_tree.selection_set(iid)
+                self.environment_tree.see(iid)
+                self.populate_environment_detail(element)
+                return True
+        return False
+
+    def register_selected_event_environment(self):
+        index = self.selected_event_index()
+        if index is None or not (0 <= index < len(self.event_entries)):
+            messagebox.showwarning(APP_TITLE, "Select an event first.")
+            return
+        entry = self.event_entries[index]
+        if entry.link_target() != "environment":
+            messagebox.showwarning(APP_TITLE, f"{entry.name} does not use cfgenvironment.xml. Only Animal, Ambient, and Infected events use Environment territory mappings.")
+            return
+        names = event_environment_names(entry.name)
+        environment_map = self.event_environment_map()
+        if any(environment_map.get(name.casefold()) for name in names):
+            if self.select_environment_territory(names):
+                self.log(f"Opened Environment mapping for {entry.name}.", "success")
+                return
+        choices = list(self.territory_source_paths())
+        if choices:
+            values = self.prompt_environment_fields(
+                "Register Event Territory",
+                (("Territory XML", "path", choices[0], choices, "Choose the territory-zone file used by this event."),),
+                required=("path",),
+            )
+            source_path = values.get("path", "") if values else ""
+        else:
+            initial_dir = str(Path(self.mission_workspace.root_path) / "env") if self.mission_workspace is not None else self.saved_settings.get("last_dir", str(Path.home()))
+            source_path = filedialog.askopenfilename(title="Choose territory XML file", filetypes=[("Territory XML", "*_territories.xml"), ("XML files", "*.xml")], initialdir=initial_dir, parent=self)
+        if source_path and self.register_territory_source_in_environment(source_path, entry.name):
+            self.select_environment_territory(event_environment_names(entry.name))
+
+    def add_environment_territory(self):
+        if not self.ensure_environment_document():
+            return
+        registered = self.environment_registered_file_values()
+        if not registered:
+            messagebox.showwarning(APP_TITLE, "Register a territory XML file first with Add file.")
+            return
+        default_source = str(Path(self.mission_workspace.root_path) / registered[0].replace("/", os.sep)) if self.mission_workspace is not None else registered[0]
+        values = self.prompt_environment_registration(default_source)
+        if not values:
+            return
+        territories = self.environment_territories_element(create=True)
+        element = ET.SubElement(territories, "territory", {"type": values["type"], "name": values["name"], "behavior": values["behavior"]})
+        ET.SubElement(element, "file", {"usable": Path(values["path"].replace("\\", "/")).stem})
+        self.finish_environment_edit(f"Added environment territory: {values['name']}", element)
+
+    def add_environment_usable_file(self):
+        territory = self.environment_ancestor_element(self.environment_selected_element, "territory")
+        if territory is None:
+            messagebox.showwarning(APP_TITLE, "Select a territory definition first.")
+            return
+        paths = self.environment_registered_file_values()
+        if not paths:
+            messagebox.showwarning(APP_TITLE, "Register a territory XML file first.")
+            return
+        values = self.prompt_environment_fields("Link Territory File", (("Registered file", "path", paths[0], paths, "Choose a registered territory XML file."),), required=("path",))
+        if not values:
+            return
+        usable = Path(values["path"].replace("\\", "/")).stem
+        element = ET.Element("file", {"usable": usable})
+        territory.insert(0, element)
+        self.finish_environment_edit(f"Linked {usable} to {territory.attrib.get('name', 'territory')}.", element)
+
+    def add_environment_agent(self):
+        territory = self.environment_ancestor_element(self.environment_selected_element, "territory")
+        if territory is None:
+            messagebox.showwarning(APP_TITLE, "Select a territory definition first.")
+            return
+        values = self.prompt_environment_fields("Add Environment Agent", (("Agent type", "type", "Male", ("Male", "Female"), "Logical agent variant."), ("Chance", "chance", "1", (), "Relative selection weight.")), required=("type",))
+        if not values:
+            return
+        attributes = {"type": values["type"]}
+        if values["chance"]:
+            attributes["chance"] = values["chance"]
+        element = ET.SubElement(territory, "agent", attributes)
+        self.finish_environment_edit(f"Added {values['type']} agent.", element)
+
+    def add_environment_spawn(self):
+        agent = self.environment_ancestor_element(self.environment_selected_element, "agent")
+        if agent is None:
+            messagebox.showwarning(APP_TITLE, "Select an agent first.")
+            return
+        values = self.prompt_environment_fields("Add Environment Spawn", (("Config classname", "configName", "", (), "DayZ or modded agent classname."), ("Chance", "chance", "1", (), "Relative selection weight.")), required=("configName",))
+        if not values:
+            return
+        attributes = {"configName": values["configName"]}
+        if values["chance"]:
+            attributes["chance"] = values["chance"]
+        element = ET.SubElement(agent, "spawn", attributes)
+        self.finish_environment_edit(f"Added environment spawn: {values['configName']}", element)
+
+    def add_environment_item(self):
+        selected = self.environment_selected_element
+        parent = self.environment_ancestor_element(selected, "agent")
+        if parent is None:
+            parent = self.environment_ancestor_element(selected, "territory")
+        if parent is None:
+            messagebox.showwarning(APP_TITLE, "Select a territory or agent first.")
+            return
+        item_names = sorted(ENVIRONMENT_ITEM_EXPLANATIONS, key=str.casefold)
+        values = self.prompt_environment_fields("Add Environment Item", (("Setting name", "name", item_names[0], item_names, "Runtime setting name; custom mod settings are allowed."), ("Value", "val", "0", (), "Value assigned to this setting.")), required=("name", "val"))
+        if not values:
+            return
+        element = ET.SubElement(parent, "item", {"name": values["name"], "val": values["val"]})
+        self.finish_environment_edit(f"Added environment item: {values['name']}", element)
+
+    def delete_environment_element(self):
+        element = self.environment_selected_element
+        if element is None or element is self.environment_root or element.tag == "territories":
+            messagebox.showwarning(APP_TITLE, "Select a deletable environment entry.")
+            return
+        parent = self.environment_parent_element(element)
+        if parent is None:
+            return
+        label = self.environment_element_label(element)
+        if not messagebox.askyesno(APP_TITLE, f"Delete environment entry?\n\n{label}"):
+            return
+        parent.remove(element)
+        self.finish_environment_edit(f"Deleted environment entry: {label}", parent)
 
     def build_territories_module(self):
         page = ttk.Frame(self.module_content)
@@ -4833,7 +6722,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         layer_panel = ttk.LabelFrame(detail, text="Territory Groups", padding=10)
         layer_panel.grid(row=1, column=0, columnspan=2, sticky="nsew")
         layer_panel.columnconfigure(0, weight=1)
-        layer_panel.rowconfigure(2, weight=1)
+        layer_panel.rowconfigure(3, weight=1)
         layer_actions = ttk.Frame(layer_panel, style="Card.TFrame")
         layer_actions.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         self.make_button(layer_actions, "Add territory", self.add_custom_territory_source, variant="add", tooltip="Create a new custom territory XML source in the mission env folder.")
@@ -4850,8 +6739,23 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.make_button(layer_actions_2, "Show all", self.show_all_territory_layers, tooltip="Show every listed territory group.")
         self.make_button(layer_actions_2, "Hide all", self.hide_all_territory_layers, tooltip="Hide every territory group.")
         self.territory_groups_toggle_button = self.make_button(layer_actions_2, "Collapse", self.toggle_territory_groups_panel, tooltip="Collapse or expand the territory group list.")
+        layer_actions_3 = ttk.Frame(layer_panel, style="Card.TFrame")
+        layer_actions_3.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(layer_actions_3, text="Territory icon", style="FieldMuted.TLabel").pack(side="left", padx=(0, 6))
+        self.territory_icon_combo = ttk.Combobox(
+            layer_actions_3,
+            textvariable=self.territory_icon_var,
+            state="disabled",
+            values=[label for label, _key in MAP_MARKER_ICON_OPTIONS],
+            width=14,
+            style="TCombobox",
+        )
+        self.territory_icon_combo.pack(side="left")
+        self.territory_icon_combo.bind("<<ComboboxSelected>>", self.on_territory_icon_changed)
+        self.bind_combobox_open_on_click(self.territory_icon_combo)
+        add_tooltip(self.territory_icon_combo, "Choose the map icon for the selected territory file. Every group and zone in that territory uses this display preference without modifying DayZ XML.")
         layer_scroll_shell = ttk.Frame(layer_panel, style="Card.TFrame")
-        layer_scroll_shell.grid(row=2, column=0, sticky="nsew")
+        layer_scroll_shell.grid(row=3, column=0, sticky="nsew")
         self.territory_group_list_shell = layer_scroll_shell
         layer_scroll_shell.columnconfigure(0, weight=1)
         layer_scroll_shell.rowconfigure(0, weight=1)
@@ -5023,7 +6927,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.make_button(actions, "Reload", self.reload_mapgroupproto, tooltip="Reload mapgroupproto.xml from disk.")
         self.make_button(actions, "Validate", self.validate_mapgroupproto_current_text, variant="action", tooltip="Validate mapgroupproto.xml and refresh checks.")
         self.make_button(actions, "Edit selected", self.open_mapgroupproto_edit_dialog, variant="action", tooltip="Edit selected group, selected container, or selected point.")
-        self.make_button(actions, "Comment out selected", self.comment_out_selected_mapgroupproto, variant="danger", tooltip="Comment out the selected group, container, or point so DayZ and this parser ignore it.")
+        self.mapgroupproto_comment_button = self.make_button(actions, "Comment out selected", self.toggle_selected_mapgroupproto_comment, variant="danger", tooltip="Toggle the selected group, container, or point between active XML and an XML comment.")
         self.make_button(actions, "Delete selected", self.delete_selected_mapgroupproto_group, variant="danger", tooltip="Delete the selected prototype group from mapgroupproto.xml.")
         self.make_button(actions, "Save", self.save_mapgroupproto, variant="save", tooltip="Overwrite mapgroupproto.xml with current XML text.")
 
@@ -5064,6 +6968,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         group_x = ttk.Scrollbar(left, command=self.mapgroupproto_group_tree.xview, orient="horizontal")
         group_x.grid(row=2, column=0, sticky="ew")
         self.mapgroupproto_group_tree.configure(yscrollcommand=group_y.set, xscrollcommand=group_x.set)
+        self.mapgroupproto_group_tree.tag_configure("commented", foreground=GRAPHITE_MUTED)
         group_actions = ttk.Frame(left)
         group_actions.grid(row=3, column=0, columnspan=2, sticky="e", pady=(8, 0))
         self.make_button(group_actions, "Add Group", self.open_mapgroupproto_add_group_dialog, variant="action", tooltip="Add a new prototype group to mapgroupproto.xml.")
@@ -5113,6 +7018,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         cont_x = ttk.Scrollbar(containers, command=self.mapgroupproto_container_tree.xview, orient="horizontal")
         cont_x.grid(row=1, column=0, sticky="ew")
         self.mapgroupproto_container_tree.configure(yscrollcommand=cont_y.set, xscrollcommand=cont_x.set)
+        self.mapgroupproto_container_tree.tag_configure("commented", foreground=GRAPHITE_MUTED)
         container_actions = ttk.Frame(containers)
         container_actions.grid(row=2, column=0, columnspan=2, sticky="e", pady=(8, 0))
         self.make_button(container_actions, "Add Container", self.open_mapgroupproto_add_container_dialog, variant="action", tooltip="Add a container to the selected prototype group.")
@@ -5137,6 +7043,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         point_x = ttk.Scrollbar(points, command=self.mapgroupproto_point_tree.xview, orient="horizontal")
         point_x.grid(row=1, column=0, sticky="ew")
         self.mapgroupproto_point_tree.configure(yscrollcommand=point_y.set, xscrollcommand=point_x.set)
+        self.mapgroupproto_point_tree.tag_configure("commented", foreground=GRAPHITE_MUTED)
 
         bottom = ttk.Frame(right)
         bottom.grid(row=2, column=0, sticky="nsew")
@@ -5188,6 +7095,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.load_ce_zones_project(path)
 
     def load_ce_zones_project(self, path):
+        if is_ignored_storage_path(path):
+            messagebox.showwarning(APP_TITLE, "storage_1 is always ignored and cannot be opened.")
+            return
         project = parse_ce_zones_project(path)
         self.ce_zones_project = project
         self.ce_zones_path = path
@@ -5254,7 +7164,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                         ce_dir / name.upper() / f"{name}.xml",
                     ])
                 try:
-                    for xml_path in ce_dir.rglob("*.xml"):
+                    for xml_path in iter_files_ignoring_storage(ce_dir):
+                        if xml_path.suffix.casefold() != ".xml":
+                            continue
                         key = re.sub(r"[^a-z0-9]+", "", xml_path.stem.casefold())
                         if key in names and (xml_path.parent / "layers").is_dir():
                             candidates.append(xml_path)
@@ -5451,6 +7363,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return ""
         if project.map_file:
             candidate = Path(project.source_path).resolve().parent / project.map_file
+            if is_ignored_storage_path(candidate):
+                return ""
             if candidate.is_file():
                 return str(candidate)
         return ""
@@ -5473,6 +7387,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def ce_zones_file_info(self, path):
         if not path:
             return "none"
+        if is_ignored_storage_path(path):
+            return "ignored"
         path_obj = Path(path)
         if not path_obj.is_file():
             return f"{path_obj.name}: missing"
@@ -5535,7 +7451,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         cache_key = ("mask", layer.image_path)
         if cache_key in self.ce_zones_cache:
             return self.ce_zones_cache[cache_key]
-        if not PIL_AVAILABLE or not layer.image_path or not Path(layer.image_path).is_file():
+        if not PIL_AVAILABLE or not layer.image_path or is_ignored_storage_path(layer.image_path) or not Path(layer.image_path).is_file():
             return None
         try:
             if Path(layer.image_path).suffix.casefold() == ".tga":
@@ -5869,6 +7785,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             messagebox.showinfo(APP_TITLE, "Selected CE Zone layer has no unsaved edits.")
             return
         output_path = Path(layer.image_path)
+        if is_ignored_storage_path(output_path):
+            messagebox.showwarning(APP_TITLE, "storage_1 is always ignored and cannot be saved.")
+            return
         old_pixels = self.ce_zones_original_masks.get(layer.name, mask.tobytes())
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5897,13 +7816,16 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         target = filedialog.askdirectory(title="Export CE Zones layer set")
         if not target:
             return
+        if is_ignored_storage_path(target):
+            messagebox.showwarning(APP_TITLE, "storage_1 is always ignored and cannot be used.")
+            return
         target_path = Path(target)
         try:
             target_layers = target_path / "layers"
             target_layers.mkdir(parents=True, exist_ok=True)
             shutil.copy2(project.source_path, target_path / Path(project.source_path).name)
             map_path = Path(project.source_path).resolve().parent / project.map_file if project.map_file else None
-            if map_path and map_path.is_file():
+            if map_path and not is_ignored_storage_path(map_path) and map_path.is_file():
                 shutil.copy2(map_path, target_path / map_path.name)
             copied = 0
             for layer in project.layers:
@@ -5921,6 +7843,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return
         folder = filedialog.askdirectory(title="Import CE Zones layer set")
         if not folder:
+            return
+        if is_ignored_storage_path(folder):
+            messagebox.showwarning(APP_TITLE, "storage_1 is always ignored and cannot be opened.")
             return
         root = Path(folder)
         xml_candidates = sorted([path for path in root.glob("*.xml") if (root / "layers").is_dir()])
@@ -6234,6 +8159,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 usage_planes = set_usage_mask_on_planes(usage_planes, width, height, layer.usage_flags, pixels)
                 written_layers += 1
         output_map = AreaFlagsMap(str(path), width, height, base_map.world_x, base_map.world_z, base_map.cell_size, base_map.reserved, usage_planes, value_plane)
+        if is_ignored_storage_path(path):
+            messagebox.showwarning(APP_TITLE, "storage_1 is always ignored and cannot be used.")
+            return
         try:
             output_path = Path(path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -7308,6 +9236,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return []
         mission_root = Path(self.mission_workspace.root_path)
         folder_path = mission_root / Path(*PurePosixPath(folder).parts)
+        if is_ignored_storage_path(folder_path):
+            return []
         if not folder_path.is_dir():
             return []
         registered = self.economycore_registered_filenames_by_folder(root).get(folder.casefold(), set())
@@ -7687,6 +9617,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "definitions": "Current module: Definitions",
             "economy_core": "Current module: Economy Core",
             "events": "Current module: Events",
+            "environment": "Current module: Environment",
             "territories": "Current module: Territories",
             "ce_zones": "Current module: CE Zones",
             "mapgroupproto": "Current module: Mapgroupproto",
@@ -7891,6 +9822,23 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             combo.after(1, lambda: self.open_combobox_dropdown(combo))
 
         combo.bind("<Button-1>", post_dropdown, add="+")
+
+    def bind_filtering_combobox(self, combo, values):
+        all_values = tuple(sorted({str(value) for value in values if str(value).strip()}, key=str.casefold))
+        combo.configure(values=all_values)
+
+        def refresh_values(_event=None):
+            query = combo.get().strip().casefold()
+            if not query:
+                matches = all_values
+            else:
+                prefix_matches = [value for value in all_values if value.casefold().startswith(query)]
+                contains_matches = [value for value in all_values if query in value.casefold() and value not in prefix_matches]
+                matches = tuple(prefix_matches + contains_matches)
+            combo.configure(values=matches)
+
+        combo.bind("<KeyRelease>", refresh_values, add="+")
+        self.bind_combobox_open_on_click(combo)
 
     def open_combobox_dropdown(self, combo):
         try:
@@ -8243,6 +10191,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.build_spawnabletypes_module()
         self.build_randompresets_module()
         self.build_events_module()
+        self.build_environment_module()
         self.build_territories_module()
         self.build_ce_zones_module()
         self.build_mapgroupproto_module()
@@ -8253,27 +10202,15 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.build_tools_module()
         self.switch_module("dashboard")
 
-        bottom = ttk.Frame(outer)
-        bottom.pack(fill="x", pady=(10, 0))
-        bottom.columnconfigure(0, weight=1)
-        log_frame = ttk.LabelFrame(bottom, text="Validation and activity log", padding=10)
-        log_frame.grid(row=0, column=0, sticky="ew")
-        self.log_text = tk.Text(log_frame, height=9, wrap="word", bg=GRAPHITE_CARD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Consolas", 9))
-        self.log_text.pack(fill="both", expand=True)
         self.configure_log_tags()
 
-        summary = ttk.Frame(bottom)
-        summary.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        summary = ttk.Frame(outer)
+        summary.pack(fill="x", pady=(6, 0))
         ttk.Label(summary, textvariable=self.summary_var, foreground=GRAPHITE_MUTED).pack(side="left")
         self.version_footer = tk.Label(self, text=f"v{APP_VERSION}", bg=GRAPHITE_BG, fg=GRAPHITE_MUTED, font=("Segoe UI", 9))
         self.version_footer.place(relx=1.0, rely=1.0, anchor="se", x=-10, y=-6)
 
     def configure_log_tags(self):
-        self.log_text.tag_configure("error", foreground=GRAPHITE_ERROR)
-        self.log_text.tag_configure("warning", foreground=GRAPHITE_WARNING)
-        self.log_text.tag_configure("success", foreground=GRAPHITE_SUCCESS)
-        self.log_text.tag_configure("muted", foreground=GRAPHITE_MUTED)
-        self.log_text.tag_configure("info", foreground=GRAPHITE_MUTED)
         if hasattr(self, "selected_issue_text"):
             self.selected_issue_text.tag_configure("error", foreground=GRAPHITE_ERROR)
             self.selected_issue_text.tag_configure("warning", foreground=GRAPHITE_WARNING)
@@ -8283,8 +10220,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.selected_issue_text.tag_configure("muted", foreground=GRAPHITE_MUTED)
 
     def log(self, message, tag=None):
-        self.log_text.insert("end", str(message) + "\n", tag or "")
-        self.log_text.see("end")
+        pass
 
     def update_window_title(self):
         marker = " *" if getattr(self, "dirty", False) else ""
@@ -8332,6 +10268,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.open_mission_folder(path)
 
     def open_mission_folder(self, path):
+        if is_ignored_storage_path(path):
+            messagebox.showwarning(APP_TITLE, "storage_1 is always ignored and cannot be opened.")
+            return
         workspace = discover_mission_workspace(path)
         self.mission_workspace = workspace
         self.set_selected_map_key("")
@@ -8342,6 +10281,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.mapgroupproto_current_text = ""
         self.mapgroupproto_groups = []
         self.mapgroupproto_issues = []
+        self.mapgroupproto_parsed_text = ""
         self.relation_definitions = workspace.relation_definitions
         self.definitions_dirty = False
         self.loaded_paths = list(workspace.type_paths)
@@ -8355,6 +10295,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         for path in paths:
             path = str(path).strip("{}")
             if not path:
+                continue
+            if is_ignored_storage_path(path):
+                self.log(f"Ignored protected storage_1 path: {path}", "warning")
                 continue
             if not os.path.isfile(path):
                 self.log(f"Skipped missing file: {path}", "warning")
@@ -8381,12 +10324,15 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.reload_all()
 
     def reload_all(self):
-        self.entries, loaded_issues = load_types_files(self.loaded_paths, include_duplicates=False)
+        dedicated_names = {"events.xml", "cfgeventspawns.xml", "cfgeventgroups.xml", "cfgspawnabletypes.xml", "cfgrandompresets.xml", "cfgenvironment.xml", "cfgeconomycore.xml", "cfgweather.xml", "mapgroupproto.xml", "mapgrouppos.xml"}
+        type_paths = [path for path in self.loaded_paths if Path(path).name.casefold() not in dedicated_names and not Path(path).name.casefold().endswith("_territories.xml")]
+        self.entries, loaded_issues = load_types_files(type_paths, include_duplicates=False)
         self.validation_issues = list(loaded_issues)
         if self.mission_workspace is not None:
             self.validation_issues = list(self.mission_workspace.issues) + self.validation_issues
         self.load_spawnable_sources(validate=False)
         self.load_random_preset_sources(validate=False)
+        self.load_environment_config()
         self.load_event_sources(validate=False)
         self.load_economycore_config()
         self.load_config_sources()
@@ -8394,6 +10340,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.ensure_mapgroupproto_loaded()
         self.validation_issues.extend(self.spawnable_issues)
         self.validation_issues.extend(self.random_preset_issues)
+        self.validation_issues.extend(self.environment_issues)
         self.validation_issues.extend(self.event_issues)
         self.validation_issues = self.dedupe_issues(self.validation_issues)
         self.analysis_issues = []
@@ -8432,11 +10379,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.selected_source_path = None
         self.issue_mode = "Loaded files"
         self.update_source_listbox()
-        self.log_text.delete("1.0", "end")
         if self.mission_workspace is not None:
             root_name = os.path.basename(os.path.normpath(self.mission_workspace.root_path))
             self.log(f"Mission loaded: {root_name}", "success")
-            self.log(f"Discovered {len(self.loaded_paths)} type source file(s), {len(self.spawnable_source_paths())} cfgspawnabletypes.xml file(s), {len(self.random_preset_source_paths())} cfgrandompresets.xml file(s), {len(self.event_source_paths())} events.xml file(s), {len(self.event_spawn_source_paths())} cfgeventspawns.xml file(s), {len(self.territory_source_paths())} territory file(s), {1 if self.mapgroupproto_path else 0} mapgroupproto.xml file(s), {len(self.config_paths)} mission config file(s), {len(self.profile_config_paths)} profile config file(s), {len(getattr(self.mission_workspace, 'cfgenvironment_paths', []))} cfgenvironment.xml file(s), {len(self.mission_workspace.cfgeconomycore_paths)} cfgeconomycore.xml file(s), and {len(self.mission_workspace.cfglimits_paths)} cfglimitsdefinition.xml file(s).", "success")
+            self.log(f"Discovered {len(self.loaded_paths)} type source file(s), {len(self.spawnable_source_paths())} cfgspawnabletypes.xml file(s), {len(self.random_preset_source_paths())} cfgrandompresets.xml file(s), {len(self.event_source_paths())} events.xml file(s), {len(self.event_spawn_source_paths())} cfgeventspawns.xml file(s), {len(self.event_group_source_paths())} cfgeventgroups.xml file(s), {len(self.territory_source_paths())} territory file(s), {1 if self.mapgroupproto_path else 0} mapgroupproto.xml file(s), {len(self.config_paths)} mission config file(s), {len(self.profile_config_paths)} profile config file(s), {len(getattr(self.mission_workspace, 'cfgenvironment_paths', []))} cfgenvironment.xml file(s), {len(self.mission_workspace.cfgeconomycore_paths)} cfgeconomycore.xml file(s), and {len(self.mission_workspace.cfglimits_paths)} cfglimitsdefinition.xml file(s).", "success")
             counts = ", ".join(f"{field}: {len(values)}" for field, values in self.relation_definitions.items())
             self.log(f"Relation definitions loaded ({counts}).", "success")
         self.mark_module_views_stale(
@@ -8446,6 +10392,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "definitions",
             "economy_core",
             "events",
+            "environment",
             "territories",
             "mapgroupproto",
             "weather",
@@ -8524,6 +10471,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if self.mission_workspace is not None:
             return list(getattr(self.mission_workspace, "event_spawn_paths", []))
         return [path for path in self.loaded_paths if os.path.basename(path).casefold() == "cfgeventspawns.xml"]
+
+    def event_group_source_paths(self):
+        if self.mission_workspace is not None:
+            return list(getattr(self.mission_workspace, "event_group_paths", []))
+        return [path for path in self.loaded_paths if os.path.basename(path).casefold() == MISSION_EVENT_GROUPS_FILENAME]
 
     def territory_source_paths(self):
         if self.mission_workspace is not None:
@@ -9267,6 +11219,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def load_event_sources(self, validate=True):
         self.event_entries = []
         self.event_spawn_groups = []
+        self.event_group_definitions = []
         self.territory_zones = []
         self.territory_groups = []
         self.territory_groups = []
@@ -9280,6 +11233,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             groups, issues = parse_event_spawns_file(path, index)
             self.event_spawn_groups.extend(groups)
             self.event_issues.extend(issues)
+        for index, path in enumerate(self.event_group_source_paths()):
+            groups, issues = parse_event_groups_file(path, index)
+            self.event_group_definitions.extend(groups)
+            self.event_issues.extend(issues)
         for index, path in enumerate(self.territory_source_paths()):
             groups, group_issues = parse_territory_groups_file(path, index)
             zones, issues = parse_territory_file(path, index)
@@ -9290,32 +11247,346 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.event_issues.extend(group_issues)
             self.event_issues.extend(issues)
         self.event_spawn_positions = event_spawn_positions_by_name(self.event_spawn_groups)
-        self.rebuild_event_child_link_cache()
+        self.rebuild_event_secondary_link_cache()
         self.mark_territory_related_event_cache_stale()
         if validate:
             self.event_issues.extend(self.validate_event_relationships())
+            self.event_issues = self.dedupe_issues(self.event_issues)
             self.mark_territory_related_event_cache_stale()
 
     def event_environment_map(self):
         return getattr(self.mission_workspace, "environment_territory_paths", {}) if self.mission_workspace is not None else {}
 
-    def rebuild_event_child_link_cache(self):
-        self.event_child_links_by_parent = event_child_links_by_parent(self.event_entries)
-        self.event_child_links_by_child = event_child_links_by_child(self.event_entries)
+    def rebuild_event_secondary_link_cache(self):
+        self.event_secondary_links_by_parent = event_secondary_links_by_parent(self.event_entries)
+        self.event_secondary_links_by_secondary = event_secondary_links_by_secondary(self.event_entries)
 
     def validate_event_relationships(self):
-        self.rebuild_event_child_link_cache()
-        return validate_event_spawn_links(
+        self.rebuild_event_secondary_link_cache()
+        return validate_event_entries(self.event_entries) + validate_event_spawn_links(
             self.event_entries,
             self.event_spawn_groups,
             self.territory_zones,
             self.event_environment_map(),
+            self.event_group_definitions,
         )
+
+    def event_creation_source_paths(self):
+        paths = list(self.event_source_paths())
+        if not paths and self.mission_workspace is not None:
+            paths.append(str(Path(self.mission_workspace.root_path) / "db" / "events.xml"))
+        return paths
+
+    def ensure_event_spawn_source_path(self):
+        paths = self.event_spawn_source_paths()
+        if paths:
+            return paths[0]
+        if self.mission_workspace is None:
+            messagebox.showwarning(APP_TITLE, "Open a mission folder before creating cfgeventspawns.xml.")
+            return ""
+        path = str(Path(self.mission_workspace.root_path) / "cfgeventspawns.xml")
+        if not messagebox.askyesno(APP_TITLE, f"No mission cfgeventspawns.xml is loaded. Terrain defaults may still exist.\n\nCreate an empty mission override?\n{path}"):
+            return ""
+        try:
+            write_event_spawns_file([], path)
+        except (OSError, ValueError, ET.ParseError) as exc:
+            messagebox.showerror(APP_TITLE, f"Could not create cfgeventspawns.xml:\n{exc}")
+            return ""
+        self.mission_workspace.event_spawn_paths.append(path)
+        self.original_event_spawn_groups = [group.clone() for group in self.event_spawn_groups]
+        return path
+
+    def ensure_event_group_source_path(self):
+        paths = self.event_group_source_paths()
+        if paths:
+            return paths[0]
+        if self.mission_workspace is None:
+            messagebox.showwarning(APP_TITLE, "Open a mission folder before creating cfgeventgroups.xml.")
+            return ""
+        path = str(Path(self.mission_workspace.root_path) / MISSION_EVENT_GROUPS_FILENAME)
+        if not messagebox.askyesno(APP_TITLE, f"No mission cfgeventgroups.xml is loaded. Terrain defaults may still exist.\n\nCreate an empty mission override?\n{path}"):
+            return ""
+        try:
+            write_event_groups_file([], path)
+        except (OSError, ValueError, ET.ParseError) as exc:
+            messagebox.showerror(APP_TITLE, f"Could not create cfgeventgroups.xml:\n{exc}")
+            return ""
+        self.mission_workspace.event_group_paths.append(path)
+        self.original_event_group_definitions = [group.clone() for group in self.event_group_definitions]
+        return path
+
+    def open_event_system_editor(self):
+        window = getattr(self, "event_system_editor_window", None)
+        if window is not None and window.winfo_exists():
+            window.lift()
+            window.focus_force()
+            return
+        self.event_system_editor_window = EventSystemEditor(self)
+
+    def save_event_files(self):
+        event_paths = self.event_source_paths() + self.event_spawn_source_paths() + self.event_group_source_paths()
+        dirty_paths = [path for path in event_paths if self.source_has_changes(path)]
+        if not dirty_paths:
+            messagebox.showinfo(APP_TITLE, "No unsaved event files to save.")
+            return
+        relationship_errors = [issue for issue in self.validate_event_relationships() if issue.severity == "error"]
+        if relationship_errors:
+            preview = "\n".join(f"- {issue.name}: {issue.message}" for issue in relationship_errors[:8])
+            messagebox.showerror(APP_TITLE, f"Event files contain blocking relationship errors:\n\n{preview}")
+            return
+        if not messagebox.askyesno(APP_TITLE, "Save changed event-system files?\n\n" + "\n".join(dirty_paths)):
+            return
+        try:
+            saved = []
+            for path in dirty_paths:
+                count = self.save_source_file(path, allow_suspicious=True)
+                self.mark_source_saved(path)
+                saved.append((path, count))
+        except (OSError, ValueError, ET.ParseError) as exc:
+            messagebox.showerror(APP_TITLE, f"Event file save failed:\n{exc}")
+            return
+        for path, count in saved:
+            self.log(f"Saved {count} event definition(s): {path}", "success")
+        self.set_status("Event files saved", "success")
+
+    def open_add_event_dialog(self):
+        source_paths = self.event_creation_source_paths()
+        if not source_paths:
+            messagebox.showwarning(APP_TITLE, "Open a mission folder or events.xml before adding an event.")
+            return
+
+        window = tk.Toplevel(self)
+        window.title("Add event")
+        window.geometry("840x760")
+        window.minsize(720, 680)
+        window.configure(bg=GRAPHITE_BG)
+        window.transient(self)
+        apply_app_icon(window)
+        shell = ttk.Frame(window)
+        shell.pack(fill="both", expand=True)
+        shell.columnconfigure(0, weight=1)
+        shell.rowconfigure(0, weight=1)
+        body = ttk.Frame(shell, padding=(14, 14, 14, 6))
+        body.grid(row=0, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+
+        source_labels = {self.source_display_name(path): path for path in source_paths}
+        source_var = tk.StringVar(value=next(iter(source_labels)))
+        family_var = tk.StringVar(value="Custom / modded")
+        variables = {
+            "name": tk.StringVar(value=""),
+            "nominal": tk.StringVar(value="0"),
+            "min": tk.StringVar(value="0"),
+            "max": tk.StringVar(value="0"),
+            "lifetime": tk.StringVar(value="0"),
+            "restock": tk.StringVar(value="0"),
+            "saferadius": tk.StringVar(value="0"),
+            "distanceradius": tk.StringVar(value="0"),
+            "cleanupradius": tk.StringVar(value="0"),
+            "secondary": tk.StringVar(value=""),
+            "position": tk.StringVar(value="fixed"),
+            "limit": tk.StringVar(value="child"),
+            "active": tk.StringVar(value="Enabled"),
+            "deletable": tk.StringVar(value="0"),
+            "init_random": tk.StringVar(value="0"),
+            "remove_damaged": tk.StringVar(value="0"),
+            "child_type": tk.StringVar(value=""),
+            "child_min": tk.StringVar(value="0"),
+            "child_max": tk.StringVar(value="0"),
+            "child_lootmin": tk.StringVar(value="0"),
+            "child_lootmax": tk.StringVar(value="0"),
+        }
+
+        target = ttk.LabelFrame(body, text="Target and identity", padding=10)
+        target.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        target.columnconfigure(1, weight=1)
+        target.columnconfigure(3, weight=1)
+        ttk.Label(target, text="Source", style="FieldName.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
+        source_combo = ttk.Combobox(target, textvariable=source_var, values=list(source_labels), state="readonly", style="TCombobox")
+        source_combo.grid(row=0, column=1, columnspan=3, sticky="ew", pady=3)
+        self.bind_combobox_open_on_click(source_combo)
+        family_label = ttk.Label(target, text="Name family", style="FieldName.TLabel")
+        family_label.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
+        family_combo = ttk.Combobox(target, textvariable=family_var, values=EVENT_CREATION_FAMILIES, state="readonly", style="TCombobox")
+        family_combo.grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=3)
+        self.bind_combobox_open_on_click(family_combo)
+        family_tip = "Known official prefix families are Ambient, Animal, Infected, Item, Static, Trajectory, and Vehicle. Loot is an exact special name. Custom names remain valid."
+        add_tooltip(family_label, family_tip)
+        add_tooltip(family_combo, family_tip)
+        name_label = ttk.Label(target, text="Event name", style="FieldName.TLabel")
+        name_label.grid(row=1, column=2, sticky="w", padx=(0, 8), pady=3)
+        name_entry = ttk.Entry(target, textvariable=variables["name"])
+        name_entry.grid(row=1, column=3, sticky="ew", pady=3)
+        add_tooltip(name_label, EVENT_FIELD_TOOLTIPS["name"])
+        add_tooltip(name_entry, EVENT_FIELD_TOOLTIPS["name"])
+
+        values_frame = ttk.LabelFrame(body, text="Event values", padding=10)
+        values_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        for column in range(4):
+            values_frame.columnconfigure(column, weight=1)
+        value_fields = (
+            ("Nominal", "nominal"), ("Min", "min"),
+            ("Max", "max"), ("Lifetime", "lifetime"),
+            ("Restock", "restock"), ("Safe radius", "saferadius"),
+            ("Distance radius", "distanceradius"), ("Cleanup radius", "cleanupradius"),
+            ("Secondary event", "secondary"), ("Position", "position"),
+            ("Limit", "limit"), ("Active", "active"),
+        )
+        for index, (label, key) in enumerate(value_fields):
+            row = index // 2
+            column = (index % 2) * 2
+            label_widget = ttk.Label(values_frame, text=label, style="FieldName.TLabel")
+            label_widget.grid(row=row, column=column, sticky="w", pady=3)
+            add_tooltip(label_widget, EVENT_FIELD_TOOLTIPS[key])
+            if key == "secondary":
+                widget = ttk.Combobox(values_frame, textvariable=variables[key], values=sorted({entry.name for entry in self.event_entries}, key=str.casefold), style="TCombobox")
+                self.bind_combobox_open_on_click(widget)
+            elif key == "position":
+                widget = ttk.Combobox(values_frame, textvariable=variables[key], values=EVENT_POSITION_VALUES[1:], state="readonly", style="TCombobox")
+                self.bind_combobox_open_on_click(widget)
+            elif key == "limit":
+                widget = ttk.Combobox(values_frame, textvariable=variables[key], values=EVENT_LIMIT_VALUES[1:], state="readonly", style="TCombobox")
+                self.bind_combobox_open_on_click(widget)
+            elif key == "active":
+                widget = ttk.Combobox(values_frame, textvariable=variables[key], values=EVENT_ACTIVE_VALUES, state="readonly", style="TCombobox")
+                self.bind_combobox_open_on_click(widget)
+            else:
+                widget = ttk.Entry(values_frame, textvariable=variables[key])
+            widget.grid(row=row, column=column + 1, sticky="ew", padx=(8, 14), pady=3)
+            add_tooltip(widget, EVENT_FIELD_TOOLTIPS[key])
+
+        flags_frame = ttk.LabelFrame(body, text="Flags", padding=10)
+        flags_frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        for column in range(6):
+            flags_frame.columnconfigure(column, weight=1)
+        for index, (label, key) in enumerate((("Deletable", "deletable"), ("Init random", "init_random"), ("Remove damaged", "remove_damaged"))):
+            label_widget = ttk.Label(flags_frame, text=label, style="FieldName.TLabel")
+            label_widget.grid(row=0, column=index * 2, sticky="w", padx=(0, 8))
+            widget = ttk.Combobox(flags_frame, textvariable=variables[key], values=EVENT_FLAG_VALUES[1:], state="readonly", width=8, style="TCombobox")
+            widget.grid(row=0, column=index * 2 + 1, sticky="ew", padx=(0, 14))
+            self.bind_combobox_open_on_click(widget)
+            add_tooltip(label_widget, EVENT_FIELD_TOOLTIPS[key])
+            add_tooltip(widget, EVENT_FIELD_TOOLTIPS[key])
+
+        child_frame = ttk.LabelFrame(body, text="Optional first child entity", padding=10)
+        child_frame.grid(row=3, column=0, sticky="ew")
+        for column in range(4):
+            child_frame.columnconfigure(column, weight=1)
+        child_fields = (
+            ("Classname", "child_type", "type"),
+            ("Min", "child_min", "min"),
+            ("Max", "child_max", "max"),
+            ("Loot min", "child_lootmin", "lootmin"),
+            ("Loot max", "child_lootmax", "lootmax"),
+        )
+        for index, (label, key, tooltip_key) in enumerate(child_fields):
+            if index == 0:
+                row, column = 0, 0
+                columnspan = 3
+            else:
+                row = 1 + (index - 1) // 2
+                column = ((index - 1) % 2) * 2
+                columnspan = 1
+            label_widget = ttk.Label(child_frame, text=label, style="FieldName.TLabel")
+            label_widget.grid(row=row, column=column, sticky="w", padx=(0, 8), pady=3)
+            if key == "child_type":
+                widget = ttk.Combobox(child_frame, textvariable=variables[key], values=sorted({entry.name for entry in self.entries}, key=str.casefold), style="TCombobox")
+                self.bind_filtering_combobox(widget, (entry.name for entry in self.entries))
+            else:
+                widget = ttk.Entry(child_frame, textvariable=variables[key])
+            widget.grid(row=row, column=column + 1, columnspan=columnspan, sticky="ew", padx=(0, 14), pady=3)
+            add_tooltip(label_widget, EVENT_CHILD_TOOLTIPS[tooltip_key])
+            add_tooltip(widget, EVENT_CHILD_TOOLTIPS[tooltip_key])
+
+        preset_state = {"name": ""}
+
+        def apply_family_preset(_event=None):
+            preset = EVENT_CREATION_PRESETS[family_var.get()]
+            current_name = variables["name"].get().strip()
+            old_name = preset_state["name"]
+            new_name = preset["name"]
+            if family_var.get() == "Loot (exact)":
+                variables["name"].set("Loot")
+            elif not current_name or current_name == old_name:
+                variables["name"].set(new_name)
+            elif old_name and current_name.startswith(old_name) and new_name:
+                variables["name"].set(new_name + current_name[len(old_name):])
+            for key in ("position", "limit", "deletable", "init_random", "remove_damaged"):
+                variables[key].set(preset[key])
+            preset_state["name"] = new_name
+
+        family_combo.bind("<<ComboboxSelected>>", apply_family_preset)
+        apply_family_preset()
+
+        def submit():
+            source_path = source_labels.get(source_var.get())
+            name = variables["name"].get().strip()
+            if not source_path or not name:
+                messagebox.showerror(APP_TITLE, "Source and event name are required.", parent=window)
+                return
+            if any(entry.name.casefold() == name.casefold() for entry in self.event_entries):
+                messagebox.showerror(APP_TITLE, f"Event already exists: {name}", parent=window)
+                return
+            secondary = variables["secondary"].get().strip()
+            if secondary.casefold() == name.casefold():
+                messagebox.showerror(APP_TITLE, "Secondary event cannot reference the event itself.", parent=window)
+                return
+            numeric_keys = ("nominal", "min", "max", "lifetime", "restock", "saferadius", "distanceradius", "cleanupradius")
+            child_numeric_keys = ("child_min", "child_max", "child_lootmin", "child_lootmax")
+            try:
+                for key in numeric_keys + child_numeric_keys:
+                    if int(variables[key].get().strip()) < 0:
+                        raise ValueError
+            except ValueError:
+                messagebox.showerror(APP_TITLE, "Event and child numeric values must be non-negative integers.", parent=window)
+                return
+
+            if self.mission_workspace is not None and not any(self.normalized_path(path) == self.normalized_path(source_path) for path in self.mission_workspace.event_paths):
+                self.mission_workspace.event_paths.append(source_path)
+            source_index = next((index for index, path in enumerate(self.event_source_paths()) if self.normalized_path(path) == self.normalized_path(source_path)), 0)
+            field_values = {key: variables[key].get().strip() for key in numeric_keys + ("secondary", "position", "limit")}
+            field_values["active"] = EVENT_ACTIVE_TO_XML[variables["active"].get()]
+            flag_values = {key: variables[key].get() for key in ("deletable", "init_random", "remove_damaged")}
+            child_attributes = {
+                "type": variables["child_type"].get().strip(),
+                "min": variables["child_min"].get().strip(),
+                "max": variables["child_max"].get().strip(),
+                "lootmin": variables["child_lootmin"].get().strip(),
+                "lootmax": variables["child_lootmax"].get().strip(),
+            }
+            entry = create_event_entry(name, source_path, source_index, field_values, flag_values, child_attributes)
+            self.event_entries.append(entry)
+            self.current_event_index = len(self.event_entries) - 1
+            self.event_filter_var.set("All")
+            self.mark_source_dirty(source_path)
+            self.load_event_validation_only()
+            self.refresh_event_table()
+            self.populate_event_editor(self.current_event_index)
+            self.update_summary()
+            self.set_status(f"Added event: {name}", "success")
+            window.destroy()
+
+        actions = ttk.Frame(shell, padding=(14, 6, 14, 14))
+        actions.grid(row=1, column=0, sticky="e")
+        self.make_button(actions, "Add event", submit, variant="add")
+        self.make_button(actions, "Cancel", window.destroy)
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.after(20, lambda: center_window(window, self))
+        window.grab_set()
+        name_entry.focus_set()
 
     def event_location_positions(self, entry):
         if entry.link_target() == "environment":
             return territory_zones_for_event(entry, self.territory_zones, self.event_environment_map())
         return self.event_spawn_positions.get(entry.name.casefold(), [])
+
+    def event_position_metrics(self, entry):
+        positions = self.event_location_positions(entry)
+        if entry.link_target() == "environment":
+            return positions, len(positions), 0, 0
+        grouped = [position for position in positions if position.attributes.get("group", "").strip()]
+        layouts = {position.attributes.get("group", "").strip().casefold() for position in grouped}
+        return positions, len(positions) - len(grouped), len(grouped), len(layouts)
 
     def territory_zone_key(self, zone):
         return (
@@ -9403,7 +11674,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.event_child_tree.delete(*self.event_child_tree.get_children())
         self.event_child_iids = {}
         for index, (_parent, child) in enumerate(self.event_child_rows(entry)):
-            name = self.event_child_name(child) or "<missing child event>"
+            name = self.event_child_name(child) or "<missing child classname>"
             iid = f"event-child-{index}"
             self.event_child_tree.insert("", "end", iid=iid, text=name, values=(self.event_child_attributes_preview(child),))
             self.event_child_iids[iid] = index
@@ -9417,9 +11688,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def prompt_event_child_attributes(self):
         result = {}
         window = tk.Toplevel(self)
-        window.title("Add child event")
-        window.geometry("420x300")
-        window.resizable(False, False)
+        window.title("Add child entity")
+        window.geometry("560x390")
+        window.minsize(500, 350)
         window.configure(bg=GRAPHITE_BG)
         window.transient(self)
         apply_app_icon(window)
@@ -9434,23 +11705,31 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "lootmax": tk.StringVar(value=""),
         }
         fields = (
-            ("Child event", "type"),
+            ("Child classname", "type"),
             ("Min", "min"),
             ("Max", "max"),
             ("Loot min", "lootmin"),
             ("Loot max", "lootmax"),
         )
         for row, (label, key) in enumerate(fields):
-            ttk.Label(frame, text=label, style="FieldName.TLabel").grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
-            entry = ttk.Entry(frame, textvariable=variables[key])
+            label_widget = ttk.Label(frame, text=label, style="FieldName.TLabel")
+            label_widget.grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
+            add_tooltip(label_widget, EVENT_CHILD_TOOLTIPS[key])
+            if key == "type":
+                child_types = sorted({entry.name for entry in self.entries if entry.name}, key=str.casefold)
+                entry = ttk.Combobox(frame, textvariable=variables[key], values=child_types, style="TCombobox")
+                self.bind_filtering_combobox(entry, child_types)
+            else:
+                entry = ttk.Entry(frame, textvariable=variables[key])
             entry.grid(row=row, column=1, sticky="ew", pady=4)
+            add_tooltip(entry, EVENT_CHILD_TOOLTIPS[key])
             if row == 0:
                 entry.focus_set()
 
         def submit():
             child_name = variables["type"].get().strip()
             if not child_name:
-                messagebox.showerror(APP_TITLE, "Child event name cannot be empty.", parent=window)
+                messagebox.showerror(APP_TITLE, "Child classname cannot be empty.", parent=window)
                 return
             values = {}
             for key in ("min", "max", "lootmin", "lootmax"):
@@ -9458,9 +11737,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 if not value:
                     continue
                 try:
-                    int(value)
+                    parsed = int(value)
                 except ValueError:
                     messagebox.showerror(APP_TITLE, f"{key} must be an integer.", parent=window)
+                    return
+                if parsed < 0:
+                    messagebox.showerror(APP_TITLE, f"{key} must be non-negative.", parent=window)
                     return
                 values[key] = value
             attributes = {}
@@ -9497,7 +11779,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.load_event_validation_only()
         self.populate_event_editor(self.current_event_index)
         self.update_summary()
-        self.log(f"Added child event {child_name} to {entry.name}.", "success")
+        self.log(f"Added child entity {child_name} to {entry.name}.", "success")
 
     def remove_selected_event_children(self):
         if self.current_event_index is None or not (0 <= self.current_event_index < len(self.event_entries)):
@@ -9507,7 +11789,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return
         selected = self.event_child_tree.selection()
         if not selected:
-            messagebox.showwarning(APP_TITLE, "Select one or more child event rows first.")
+            messagebox.showwarning(APP_TITLE, "Select one or more child entity rows first.")
             return
         entry = self.event_entries[self.current_event_index]
         rows = self.event_child_rows(entry)
@@ -9524,21 +11806,24 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             if index is None or not (0 <= index < len(rows)):
                 continue
             parent, child = rows[index]
-            removed_names.append(self.event_child_name(child) or "<missing child event>")
+            removed_names.append(self.event_child_name(child) or "<missing child classname>")
             parent.remove(child)
-        for container in list(entry.element.findall("children")):
-            if not list(container):
-                entry.element.remove(container)
         if not removed_names:
             return
         self.mark_source_dirty(entry.source_path)
         self.load_event_validation_only()
         self.populate_event_editor(self.current_event_index)
         self.update_summary()
-        self.log(f"Removed {len(removed_names)} child event reference(s) from {entry.name}.", "success")
+        self.log(f"Removed {len(removed_names)} child entity definition(s) from {entry.name}.", "success")
 
     def event_relationship_lines(self, entry):
         family, label, link_target = classify_event_name(entry.name)
+        position = entry.child_text("position")
+        if link_target == "unknown" and position == "fixed":
+            label = "Fixed-position event"
+            link_target = "cfgeventspawns"
+        elif link_target == "cfgeventspawns" and position in {"player", "uniform"}:
+            link_target = "position_mode"
         related_issues = [issue for issue in self.event_issues if issue.name and issue.name.casefold() == entry.name.casefold()]
         lines = []
         if related_issues:
@@ -9557,17 +11842,26 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         ])
         if not entry.is_enabled():
             lines.append("Status: disabled events are skipped by relationship validation.")
-        parent_links = self.event_child_links_by_child.get(entry.name.casefold(), [])
-        child_links = self.event_child_links_by_parent.get(entry.name.casefold(), [])
+        parent_links = self.event_secondary_links_by_secondary.get(entry.name.casefold(), [])
+        secondary_links = self.event_secondary_links_by_parent.get(entry.name.casefold(), [])
         if parent_links:
             parent_names = sorted({link.parent_name for link in parent_links}, key=str.casefold)
             enabled_parent_names = sorted({link.parent_name for link in parent_links if link.parent_enabled}, key=str.casefold)
-            lines.append(f"Used by: {', '.join(parent_names)}")
+            lines.append(f"Used as secondary by: {', '.join(parent_names)}")
             if enabled_parent_names:
                 lines.append(f"Enabled parent workflow: {', '.join(enabled_parent_names)}")
-        if child_links:
-            child_names = sorted({link.child_name for link in child_links}, key=str.casefold)
-            lines.append(f"Child events: {', '.join(child_names)}")
+        if secondary_links:
+            secondary_names = sorted({link.secondary_name for link in secondary_links}, key=str.casefold)
+            lines.append(f"Secondary event: {', '.join(secondary_names)}")
+        child_names = [name for _parent, child in self.event_child_rows(entry) if (name := self.event_child_name(child))]
+        if child_names:
+            lines.append(f"Child entities: {', '.join(child_names)}")
+        elif entry.element.find("children") is not None:
+            lines.append("Child entities: none; an empty <children/> can be valid for grouped or secondary-driven events.")
+
+        if family in {"Animal", "Ambient", "Infected"}:
+            cap_name = "ZombieMaxCount" if family == "Infected" else "AnimalMaxCount"
+            lines.append(f"Global cap: globals.xml {cap_name} may further limit this event.")
 
         if link_target == "cfgeventspawns":
             groups = self.event_groups_for_entry(entry)
@@ -9575,8 +11869,21 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             lines.append("Expected link: cfgeventspawns.xml fixed positions")
             if groups:
                 sources = sorted({self.source_display_name(group.source_path) for group in groups}, key=str.casefold)
+                grouped_positions = [position for position in positions if position.attributes.get("group", "").strip()]
+                group_names = sorted({position.attributes.get("group", "").strip() for position in grouped_positions}, key=str.casefold)
+                known_layouts = {group.name.casefold(): group for group in self.event_group_definitions}
+                resolved_layouts = [known_layouts[name.casefold()] for name in group_names if name.casefold() in known_layouts]
                 lines.append(f"Linked file(s): {', '.join(sources)}")
                 lines.append(f"Location count: {len(positions)}")
+                lines.append(f"Direct positions: {len(positions) - len(grouped_positions)}")
+                lines.append(f"Grouped positions: {len(grouped_positions)}")
+                if group_names:
+                    lines.append(f"Referenced layouts: {', '.join(group_names)}")
+                    lines.append(f"Resolved layout children: {sum(len(group.children) for group in resolved_layouts)}")
+                zones = [group.zone for group in groups if group.zone is not None]
+                if zones:
+                    zone = zones[0].attributes
+                    lines.append(f"Dynamic secondary zone: static {zone.get('smin', '?')}..{zone.get('smax', '?')}, dynamic {zone.get('dmin', '?')}..{zone.get('dmax', '?')}, radius {zone.get('r', '?')}")
             else:
                 lines.append("Linked file(s): none found")
                 if entry.is_enabled():
@@ -9617,9 +11924,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         elif link_target == "global":
             lines.append("Expected link: none")
             lines.append("Status: this controls a global economy behavior, not a position or territory file.")
+        elif link_target == "position_mode":
+            lines.append(f"Expected link: {position} positioning is handled by the event spawner, not fixed cfgeventspawns.xml points.")
         else:
             lines.append("Expected link: unknown")
-            lines.append("Hint: DayZ event names usually start with a known prefix such as Vehicle, Static, Item, Animal, Ambient, Infected, Trajectory, or Loot.")
+            lines.append("Hint: custom event names are valid, but their position mode and external CE references must match exactly.")
 
         return lines
 
@@ -9635,7 +11944,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.event_relationship_text.configure(state="disabled")
 
     def insert_event_relationship_line(self, widget, line, line_index):
-        linked_prefixes = ("Used by", "Enabled parent workflow", "Child events")
+        linked_prefixes = ("Used as secondary by", "Enabled parent workflow", "Secondary event")
         if not any(line.startswith(f"{prefix}: ") for prefix in linked_prefixes):
             widget.insert("end", line)
             return
@@ -9711,9 +12020,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return
         entry = self.event_entries[index]
         self.current_event_index = index
+        if self.event_secondary_combo is not None:
+            self.event_secondary_combo.configure(values=[item.name for item in sorted(self.event_entries, key=lambda item: item.name.casefold()) if item is not entry])
         self.event_editor_vars["name"].set(entry.name)
-        for field in ("nominal", "min", "max", "lifetime", "restock", "saferadius", "distanceradius", "cleanupradius", "position", "limit"):
+        for field in ("nominal", "min", "max", "lifetime", "restock", "saferadius", "distanceradius", "cleanupradius", "secondary", "position", "limit"):
             self.event_editor_vars[field].set(entry.child_text(field))
+        for field in ("deletable", "init_random", "remove_damaged"):
+            self.event_editor_vars[field].set(entry.flag_value(field))
         self.event_editor_vars["active"].set(EVENT_XML_TO_ACTIVE.get(entry.child_text("active"), entry.child_text("active")))
         self.populate_event_detail(index)
 
@@ -9754,6 +12067,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "position": ("position", "Position"),
             "limit": ("limit", "Limit"),
             "spawns": ("spawns", "Locations"),
+            "direct": ("direct", "Direct"),
+            "grouped": ("grouped", "Grouped"),
+            "layouts": ("layouts", "Layouts"),
+            "secondary": ("secondary", "Secondary"),
         }
         arrow = " v" if self.event_sort_reverse else " ^"
         for column, (tree_column, label) in labels.items():
@@ -9763,7 +12080,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def event_entry_sort_key(self, item):
         index, entry = item
         column = self.event_sort_column
-        positions = self.event_location_positions(entry)
+        positions, direct_count, grouped_count, layout_count = self.event_position_metrics(entry)
         if column == "event":
             return (entry.name.casefold(), index)
         if column == "source":
@@ -9772,6 +12089,14 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return (classify_event_name(entry.name)[0].casefold(), entry.name.casefold(), index)
         if column == "spawns":
             return (len(positions), entry.name.casefold(), index)
+        if column == "direct":
+            return (direct_count, entry.name.casefold(), index)
+        if column == "grouped":
+            return (grouped_count, entry.name.casefold(), index)
+        if column == "layouts":
+            return (layout_count, entry.name.casefold(), index)
+        if column == "secondary":
+            return (entry.child_text("secondary").casefold(), entry.name.casefold(), index)
         if column in {"nominal", "min", "max", "lifetime", "restock", "active"}:
             value = parse_sort_int(entry.child_text(column))
             return (value is None, value if value is not None else 0, entry.name.casefold(), index)
@@ -9783,6 +12108,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.update_event_sort_headings()
         paths = self.event_source_paths()
         spawn_paths = self.event_spawn_source_paths()
+        group_paths = self.event_group_source_paths()
         territory_paths = self.territory_source_paths()
         if paths:
             first = self.source_display_name(paths[0])
@@ -9795,7 +12121,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
         issue_count = len(self.event_issues)
         self.event_summary_var.set(
-            f"{len(self.event_entries)} event(s) from {len(paths)} source file(s), {sum(len(group.positions) for group in self.event_spawn_groups)} spawn position(s) from {len(spawn_paths)} cfgeventspawns file(s), {len(self.territory_zones)} territory zone(s) from {len(territory_paths)} territory file(s)."
+            f"{len(self.event_entries)} event(s), {sum(len(group.positions) for group in self.event_spawn_groups)} spawn position(s) from {len(spawn_paths)} cfgeventspawns file(s), {len(self.event_group_definitions)} layout group(s) from {len(group_paths)} cfgeventgroups file(s), {len(self.territory_zones)} territory zone(s)."
             + (f" {issue_count} event issue(s)." if issue_count else "")
         )
         if self.event_tree is None:
@@ -9821,7 +12147,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             visible_entries.append((index, entry))
 
         for index, entry in sorted(visible_entries, key=self.event_entry_sort_key, reverse=self.event_sort_reverse):
-            positions = self.event_location_positions(entry)
+            positions, direct_count, grouped_count, layout_count = self.event_position_metrics(entry)
             family, _label, _link_target = classify_event_name(entry.name)
             tag = ""
             if entry.name.casefold() in error_names:
@@ -9850,6 +12176,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                     entry.child_text("position"),
                     entry.child_text("limit"),
                     str(len(positions)),
+                    str(direct_count),
+                    str(grouped_count),
+                    str(layout_count),
+                    entry.child_text("secondary"),
                 ),
                 tags=(tag,) if tag else (),
             )
@@ -9877,6 +12207,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         paths.extend(self.random_preset_source_paths())
         paths.extend(self.event_source_paths())
         paths.extend(self.event_spawn_source_paths())
+        paths.extend(self.event_group_source_paths())
         paths.extend(self.territory_source_paths())
         if self.mission_workspace is not None:
             paths.extend(getattr(self.mission_workspace, "cfgenvironment_paths", []))
@@ -9956,6 +12287,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.mapgroupproto_status_var.set("No mapgroupproto.xml found in selected mission root.")
             self.clear_mapgroupproto_tables()
             return
+        if getattr(self, "mapgroupproto_parsed_text", "") == self.mapgroupproto_current_text:
+            self.populate_mapgroupproto_tables()
+            return
         self.populate_mapgroupproto_view_fast()
 
     def populate_mapgroupproto_view_fast(self):
@@ -9964,6 +12298,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return False
         groups, _issues = self.parse_current_mapgroupproto_text(collect_issues=False)
         self.mapgroupproto_groups = groups
+        self.mapgroupproto_parsed_text = self.mapgroupproto_current_text
         self.mapgroupproto_issues = []
         self.populate_mapgroupproto_tables()
         if self.mapgroupproto_issue_text is not None:
@@ -9992,6 +12327,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.mapgroupproto_reloading = False
 
     def clear_mapgroupproto_tables(self):
+        self.mapgroupproto_parsed_text = ""
         for tree in (self.mapgroupproto_group_tree, self.mapgroupproto_container_tree, self.mapgroupproto_point_tree):
             if tree is not None:
                 tree.delete(*tree.get_children())
@@ -10011,6 +12347,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         groups, issues = self.parse_current_mapgroupproto_text()
         self.mapgroupproto_groups = groups
         self.mapgroupproto_issues = issues
+        self.mapgroupproto_parsed_text = self.mapgroupproto_current_text
         self.populate_mapgroupproto_tables()
         error_count = sum(1 for issue in issues if issue.severity == "error")
         warning_count = sum(1 for issue in issues if issue.severity == "warning")
@@ -10040,7 +12377,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             if not self.mapgroupproto_group_matches_filter(group):
                 continue
             iid = f"mapgroupproto-group-{index}"
-            self.mapgroupproto_group_tree.insert("", "end", iid=iid, text=group.name, values=(group.lootmax, group.placed_count, group.container_count, group.point_count, group.matching_item_count, group.issue_count))
+            self.mapgroupproto_group_tree.insert("", "end", iid=iid, text=group.name, values=(group.lootmax, group.placed_count, group.container_count, group.point_count, group.matching_item_count, group.issue_count), tags=("commented",) if getattr(group, "commented", False) else ())
             self.mapgroupproto_group_iids[group.name] = iid
         self.populate_mapgroupproto_issues()
         if selected_name:
@@ -10111,6 +12448,15 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 self.mapgroupproto_issue_text.insert("end", "\n")
         self.mapgroupproto_issue_text.configure(state="disabled")
 
+    def update_mapgroupproto_comment_button(self):
+        if getattr(self, "mapgroupproto_comment_button", None) is None:
+            return
+        group = self.selected_mapgroupproto_group()
+        container = self.selected_mapgroupproto_container(group)
+        point = self.selected_mapgroupproto_point(group)
+        commented = bool(group and (getattr(group, "commented", False) or (container and getattr(container, "commented", False)) or (point and getattr(point, "commented", False))))
+        self.mapgroupproto_comment_button.configure(text="Activate selected" if commented else "Comment out selected")
+
     def on_mapgroupproto_issue_click(self, event):
         if self.mapgroupproto_issue_text is None:
             return "break"
@@ -10129,6 +12475,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.mapgroupproto_selected_container_index = None
             self.mapgroupproto_selected_point_index = None
             self.populate_mapgroupproto_group_detail(None)
+            self.update_mapgroupproto_comment_button()
             return
         name = self.mapgroupproto_group_tree.item(selected[0], "text")
         for index, group in enumerate(self.mapgroupproto_groups):
@@ -10137,6 +12484,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 self.mapgroupproto_selected_container_index = None
                 self.mapgroupproto_selected_point_index = None
                 self.populate_mapgroupproto_group_detail(group)
+                self.update_mapgroupproto_comment_button()
                 return
 
     def on_mapgroupproto_container_select(self, event=None):
@@ -10146,9 +12494,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.mapgroupproto_selected_point_index = None
         if not selected:
             self.mapgroupproto_selected_container_index = None
+            self.update_mapgroupproto_comment_button()
             return
         match = re.match(r"mapgroupproto-container-(\d+)$", str(selected[0]))
         self.mapgroupproto_selected_container_index = int(match.group(1)) if match else None
+        self.update_mapgroupproto_comment_button()
 
     def on_mapgroupproto_point_select(self, event=None):
         if self.mapgroupproto_point_tree is None:
@@ -10156,11 +12506,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         selected = self.mapgroupproto_point_tree.selection()
         if not selected:
             self.mapgroupproto_selected_point_index = None
+            self.update_mapgroupproto_comment_button()
             return
         match = re.match(r"mapgroupproto-point-(\d+)-(\d+)$", str(selected[0]))
         self.mapgroupproto_selected_point_index = (int(match.group(1)), int(match.group(2))) if match else None
         if match:
             self.mapgroupproto_selected_container_index = int(match.group(1))
+        self.update_mapgroupproto_comment_button()
 
     def populate_mapgroupproto_group_detail(self, group):
         if self.mapgroupproto_container_tree is not None:
@@ -10169,12 +12521,14 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.mapgroupproto_point_tree.delete(*self.mapgroupproto_point_tree.get_children())
         if group is None:
             self.set_mapgroupproto_preview_text("Select a group to preview its XML.")
+            self.update_mapgroupproto_comment_button()
             return
         self.set_mapgroupproto_preview_text(group.xml)
         for index, container in enumerate(group.containers):
-            self.mapgroupproto_container_tree.insert("", "end", iid=f"mapgroupproto-container-{index}", text=container.name, values=(container.lootmax, container.point_count, container.matching_item_count, ", ".join(container.categories), ", ".join(container.usages), ", ".join(container.values), ", ".join(container.tags), container.issue_count))
+            self.mapgroupproto_container_tree.insert("", "end", iid=f"mapgroupproto-container-{index}", text=container.name, values=(container.lootmax, container.point_count, container.matching_item_count, ", ".join(container.categories), ", ".join(container.usages), ", ".join(container.values), ", ".join(container.tags), container.issue_count), tags=("commented",) if getattr(container, "commented", False) else ())
             for point_index, point in enumerate(container.points):
-                self.mapgroupproto_point_tree.insert("", "end", iid=f"mapgroupproto-point-{index}-{point_index}", text=point.pos, values=(point.range, point.height, point.flags, point.issue_count))
+                self.mapgroupproto_point_tree.insert("", "end", iid=f"mapgroupproto-point-{index}-{point_index}", text=point.pos, values=(point.range, point.height, point.flags, point.issue_count), tags=("commented",) if getattr(point, "commented", False) else ())
+        self.update_mapgroupproto_comment_button()
 
     def selected_mapgroupproto_group(self):
         if self.mapgroupproto_selected_index is None:
@@ -10310,6 +12664,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return
         container = self.selected_mapgroupproto_container(group)
         point = self.selected_mapgroupproto_point(group)
+        if getattr(group, "commented", False) or (container is not None and getattr(container, "commented", False)) or (point is not None and getattr(point, "commented", False)):
+            messagebox.showwarning(APP_TITLE, "Activate the commented entry before editing it.")
+            return
         window = tk.Toplevel(self)
         window.title("Edit Mapgroupproto Entry")
         window.configure(bg=GRAPHITE_BG)
@@ -10385,8 +12742,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             window.destroy()
 
         self.make_button(actions, "Apply", apply, variant="save")
-        if group.placed_count <= 0:
-            self.make_button(actions, "Comment out selected", lambda: (self.comment_out_selected_mapgroupproto(parent=window), window.destroy()), variant="danger")
+        self.make_button(actions, "Comment out selected", lambda: (self.comment_out_selected_mapgroupproto(parent=window), window.destroy()), variant="danger")
         self.make_button(actions, "Cancel", window.destroy)
         center_window(window, self)
 
@@ -10396,6 +12752,23 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def current_mapgroupproto_root(self):
         parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
         return ET.fromstring(self.mapgroupproto_current_text, parser=parser)
+
+    def mapgroupproto_xml_nodes(self, parent, tag, inherited_commented=False):
+        records = []
+        for node in list(parent):
+            if node.tag == tag:
+                records.append((node, node, inherited_commented))
+                continue
+            element = parse_commented_xml_element(node, tag)
+            if element is not None:
+                records.append((node, element, True))
+        return records
+
+    def selected_mapgroupproto_group_xml_record(self, root):
+        records = self.mapgroupproto_xml_nodes(root, "group")
+        if self.mapgroupproto_selected_index is None or not (0 <= self.mapgroupproto_selected_index < len(records)):
+            return None
+        return records[self.mapgroupproto_selected_index]
 
     def render_mapgroupproto_root(self, root):
         ET.indent(root, space="    ")
@@ -10464,10 +12837,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if container_lootmax and not container_lootmax.isdigit():
             raise ValueError("Container lootmax must be a positive integer.")
         root = self.current_mapgroupproto_root()
-        group_elements = root.findall("group")
-        if self.mapgroupproto_selected_index >= len(group_elements):
+        group_record = self.selected_mapgroupproto_group_xml_record(root)
+        if group_record is None:
             raise ValueError("Selected group no longer exists.")
-        group_element = group_elements[self.mapgroupproto_selected_index]
+        _group_node, group_element, group_commented = group_record
+        if group_commented:
+            raise ValueError("Activate the commented group before adding a container.")
         container_element = ET.Element("container", {"name": container_name})
         if container_lootmax:
             container_element.set("lootmax", container_lootmax)
@@ -10483,6 +12858,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def apply_mapgroupproto_selected_edit(self, values):
         if self.mapgroupproto_selected_index is None:
             raise ValueError("Select a group first.")
+        selected_group = self.selected_mapgroupproto_group()
+        if selected_group is None:
+            raise ValueError("Selected group no longer exists.")
         group_name = str(values.get("group_name", "")).strip()
         if not group_name:
             raise ValueError("Group name is required.")
@@ -10490,10 +12868,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if group_lootmax and not group_lootmax.isdigit():
             raise ValueError("Group lootmax must be a positive integer.")
         root = self.current_mapgroupproto_root()
-        group_elements = root.findall("group")
-        if self.mapgroupproto_selected_index >= len(group_elements):
+        group_record = self.selected_mapgroupproto_group_xml_record(root)
+        if group_record is None:
             raise ValueError("Selected group no longer exists.")
-        group_element = group_elements[self.mapgroupproto_selected_index]
+        _group_node, group_element, group_commented = group_record
+        if group_commented:
+            raise ValueError("Activate the commented group before editing it.")
         group_element.set("name", group_name)
         if group_lootmax:
             group_element.set("lootmax", group_lootmax)
@@ -10506,9 +12886,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         )
 
         if self.mapgroupproto_selected_container_index is not None:
-            containers = group_element.findall("container")
+            containers = self.mapgroupproto_xml_nodes(group_element, "container")
             if self.mapgroupproto_selected_container_index < len(containers):
-                container_element = containers[self.mapgroupproto_selected_container_index]
+                _container_node, container_element, container_commented = containers[self.mapgroupproto_selected_container_index]
+                if container_commented:
+                    raise ValueError("Activate the commented container before editing it.")
                 container_name = str(values.get("container_name", "")).strip()
                 if not container_name:
                     raise ValueError("Container name is required.")
@@ -10528,11 +12910,16 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
         if self.mapgroupproto_selected_point_index is not None:
             container_index, point_index = self.mapgroupproto_selected_point_index
-            containers = group_element.findall("container")
+            containers = self.mapgroupproto_xml_nodes(group_element, "container")
             if container_index < len(containers):
-                points = containers[container_index].findall("point")
+                _container_node, container_element, container_commented = containers[container_index]
+                if container_commented:
+                    raise ValueError("Activate the commented container before editing its points.")
+                points = self.mapgroupproto_xml_nodes(container_element, "point")
                 if point_index < len(points):
-                    point_element = points[point_index]
+                    _point_node, point_element, point_commented = points[point_index]
+                    if point_commented:
+                        raise ValueError("Activate the commented point before editing it.")
                     point_pos = str(values.get("point_pos", "")).strip()
                     if not point_pos:
                         raise ValueError("Point pos is required.")
@@ -10544,7 +12931,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                         else:
                             point_element.attrib.pop(attr, None)
 
-        self.set_mapgroupproto_current_text(self.render_mapgroupproto_root(root), group_name)
+        self.set_mapgroupproto_current_text(self.render_mapgroupproto_root(root), group_name, preserve_issues=True, removed_issue_name=selected_group.name)
         self.set_status("Mapgroupproto edit applied", "success")
 
     def deactivate_selected_mapgroupproto_group(self, parent=None):
@@ -10556,6 +12943,76 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         child_index = children.index(element)
         parent.remove(element)
         parent.insert(child_index, ET.Comment("\n" + element_text + "\n"))
+
+    def activate_mapgroupproto_comment(self, parent, comment_node, expected_tag):
+        element = parse_commented_xml_element(comment_node, expected_tag)
+        if element is None:
+            raise ValueError(f"Comment does not contain one valid <{expected_tag}> element.")
+        child_index = list(parent).index(comment_node)
+        parent.remove(comment_node)
+        parent.insert(child_index, element)
+
+    def toggle_selected_mapgroupproto_comment(self, parent=None):
+        group = self.selected_mapgroupproto_group()
+        if group is None:
+            messagebox.showwarning(APP_TITLE, "Select a mapgroupproto group first.", parent=parent)
+            return
+        container = self.selected_mapgroupproto_container(group)
+        point = self.selected_mapgroupproto_point(group)
+        if group.commented or (container is not None and container.commented) or (point is not None and point.commented):
+            self.activate_selected_mapgroupproto(parent=parent)
+        else:
+            self.comment_out_selected_mapgroupproto(parent=parent)
+
+    def activate_selected_mapgroupproto(self, parent=None):
+        group = self.selected_mapgroupproto_group()
+        if group is None:
+            messagebox.showwarning(APP_TITLE, "Select a commented mapgroupproto entry first.", parent=parent)
+            return
+        root = self.current_mapgroupproto_root()
+        group_record = self.selected_mapgroupproto_group_xml_record(root)
+        if group_record is None:
+            messagebox.showerror(APP_TITLE, "Selected group no longer exists.", parent=parent)
+            return
+        group_node, group_element, group_commented = group_record
+        target_kind = "group"
+        try:
+            if group_commented:
+                self.activate_mapgroupproto_comment(root, group_node, "group")
+            else:
+                container = self.selected_mapgroupproto_container(group)
+                point = self.selected_mapgroupproto_point(group)
+                container_records = self.mapgroupproto_xml_nodes(group_element, "container")
+                if container is not None and container.commented and self.mapgroupproto_selected_container_index is not None:
+                    if self.mapgroupproto_selected_container_index >= len(container_records):
+                        raise ValueError("Selected container no longer exists.")
+                    container_node, _container_element, container_commented = container_records[self.mapgroupproto_selected_container_index]
+                    if not container_commented:
+                        raise ValueError("Selected container is already active.")
+                    self.activate_mapgroupproto_comment(group_element, container_node, "container")
+                    target_kind = "container"
+                elif point is not None and point.commented and self.mapgroupproto_selected_point_index is not None:
+                    container_index, point_index = self.mapgroupproto_selected_point_index
+                    if container_index >= len(container_records):
+                        raise ValueError("Selected container no longer exists.")
+                    _container_node, container_element, container_commented = container_records[container_index]
+                    if container_commented:
+                        raise ValueError("Activate the commented container before activating one of its points.")
+                    point_records = self.mapgroupproto_xml_nodes(container_element, "point")
+                    if point_index >= len(point_records):
+                        raise ValueError("Selected point no longer exists.")
+                    point_node, _point_element, point_commented = point_records[point_index]
+                    if not point_commented:
+                        raise ValueError("Selected point is already active.")
+                    self.activate_mapgroupproto_comment(container_element, point_node, "point")
+                    target_kind = "point"
+                else:
+                    raise ValueError("Selected entry is already active.")
+        except ValueError as exc:
+            messagebox.showerror(APP_TITLE, str(exc), parent=parent)
+            return
+        self.set_mapgroupproto_current_text(self.render_mapgroupproto_root(root), selected_name=group.name, preserve_issues=True)
+        self.set_status(f"Mapgroupproto {target_kind} activated", "success")
 
     def comment_out_selected_mapgroupproto(self, parent=None, force_kind=""):
         group = self.selected_mapgroupproto_group()
@@ -10577,41 +13034,57 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if target_kind == "group" and group.placed_count > 0 and not messagebox.askyesno(APP_TITLE, f"{group.name} has {group.placed_count} placed instance(s).\n\nComment it out anyway?", parent=parent):
             return
         if target_kind == "group" and group.placed_count <= 0:
-            message = f"Comment out this unplaced prototype group?\n\n{group.name}\n\nThe game and parser will ignore it."
+            message = f"Comment out this unplaced prototype group?\n\n{group.name}\n\nDayZ will ignore it; the tool will keep it visible."
         elif target_kind == "container":
-            message = f"Comment out selected container?\n\n{group.name} -> {target_label}\n\nThe game and parser will ignore it."
+            message = f"Comment out selected container?\n\n{group.name} -> {target_label}\n\nDayZ will ignore it; the tool will keep it visible."
         else:
-            message = f"Comment out selected point?\n\n{group.name} -> {target_label}\n\nThe game and parser will ignore it."
+            message = f"Comment out selected point?\n\n{group.name} -> {target_label}\n\nDayZ will ignore it; the tool will keep it visible."
         if not messagebox.askyesno(APP_TITLE, message, parent=parent):
             return
         root = self.current_mapgroupproto_root()
-        group_elements = root.findall("group")
-        if self.mapgroupproto_selected_index >= len(group_elements):
+        group_record = self.selected_mapgroupproto_group_xml_record(root)
+        if group_record is None:
             messagebox.showerror(APP_TITLE, "Selected group no longer exists.", parent=parent)
             return
-        group_element = group_elements[self.mapgroupproto_selected_index]
+        group_node, group_element, group_commented = group_record
+        if group_commented:
+            messagebox.showwarning(APP_TITLE, "Selected group is already commented out.", parent=parent)
+            return
         selected_name = ""
         if target_kind == "point" and self.mapgroupproto_selected_point_index is not None:
             container_index, point_index = self.mapgroupproto_selected_point_index
-            containers = group_element.findall("container")
+            containers = self.mapgroupproto_xml_nodes(group_element, "container")
             if container_index >= len(containers):
                 messagebox.showerror(APP_TITLE, "Selected container no longer exists.", parent=parent)
                 return
-            points = containers[container_index].findall("point")
+            _container_node, container_element, container_commented = containers[container_index]
+            if container_commented:
+                messagebox.showwarning(APP_TITLE, "Selected container is already commented out.", parent=parent)
+                return
+            points = self.mapgroupproto_xml_nodes(container_element, "point")
             if point_index >= len(points):
                 messagebox.showerror(APP_TITLE, "Selected point no longer exists.", parent=parent)
                 return
-            self.comment_mapgroupproto_element(containers[container_index], points[point_index])
+            point_node, _point_element, point_commented = points[point_index]
+            if point_commented:
+                messagebox.showwarning(APP_TITLE, "Selected point is already commented out.", parent=parent)
+                return
+            self.comment_mapgroupproto_element(container_element, point_node)
             selected_name = group.name
         elif target_kind == "container" and self.mapgroupproto_selected_container_index is not None:
-            containers = group_element.findall("container")
+            containers = self.mapgroupproto_xml_nodes(group_element, "container")
             if self.mapgroupproto_selected_container_index >= len(containers):
                 messagebox.showerror(APP_TITLE, "Selected container no longer exists.", parent=parent)
                 return
-            self.comment_mapgroupproto_element(group_element, containers[self.mapgroupproto_selected_container_index])
+            container_node, _container_element, container_commented = containers[self.mapgroupproto_selected_container_index]
+            if container_commented:
+                messagebox.showwarning(APP_TITLE, "Selected container is already commented out.", parent=parent)
+                return
+            self.comment_mapgroupproto_element(group_element, container_node)
             selected_name = group.name
         else:
-            self.comment_mapgroupproto_element(root, group_element)
+            self.comment_mapgroupproto_element(root, group_node)
+            selected_name = group.name
         self.set_mapgroupproto_current_text(self.render_mapgroupproto_root(root), selected_name=selected_name, preserve_issues=True, removed_issue_name=group.name)
         self.set_status(f"Mapgroupproto {target_kind} commented out", "warning")
 
@@ -10623,11 +13096,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if not messagebox.askyesno(APP_TITLE, f"Delete selected prototype group?\n\n{group.name}\n\nThis removes it from mapgroupproto.xml.", parent=parent):
             return
         root = self.current_mapgroupproto_root()
-        group_elements = root.findall("group")
-        if self.mapgroupproto_selected_index >= len(group_elements):
+        group_record = self.selected_mapgroupproto_group_xml_record(root)
+        if group_record is None:
             messagebox.showerror(APP_TITLE, "Selected group no longer exists.", parent=parent)
             return
-        root.remove(group_elements[self.mapgroupproto_selected_index])
+        group_node, _group_element, _group_commented = group_record
+        root.remove(group_node)
         self.set_mapgroupproto_current_text(self.render_mapgroupproto_root(root), preserve_issues=True, removed_issue_name=group.name)
         self.set_status("Mapgroupproto group deleted", "warning")
 
@@ -10648,9 +13122,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if not self.mapgroupproto_path:
             messagebox.showwarning(APP_TITLE, "No mapgroupproto.xml loaded.")
             return
-        if not self.validate_mapgroupproto_current_text(show_success=False):
-            if not messagebox.askyesno(APP_TITLE, "mapgroupproto.xml has validation errors.\n\nSave anyway?"):
-                return
+        try:
+            self.current_mapgroupproto_root()
+        except ET.ParseError as exc:
+            messagebox.showerror(APP_TITLE, f"mapgroupproto.xml contains invalid XML:\n\n{exc}")
+            return
         if not messagebox.askyesno(APP_TITLE, f"This will overwrite:\n{self.mapgroupproto_path}\n\nContinue?"):
             return
         if not self.confirm_source_save_sanity([self.mapgroupproto_path]):
@@ -10730,6 +13206,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         return merged
 
     def read_config_file_text(self, path):
+        if is_ignored_storage_path(path):
+            raise OSError("Access blocked: storage_1 is always ignored.")
         try:
             return Path(path).read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
@@ -11520,7 +13998,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return
         try:
             count = self.save_source_file(self.selected_config_path, allow_suspicious=True)
-        except OSError as exc:
+        except (OSError, ValueError, ET.ParseError) as exc:
             messagebox.showerror(APP_TITLE, f"Save failed:\n{exc}")
             return
         self.mark_source_saved(self.selected_config_path)
@@ -11953,6 +14431,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.draw_territory_map_grid(base_w, base_h)
         label_limit = len(visible_items) <= 120
         for index, zone, (x, z) in visible_items:
+            zone_tag = f"territory-zone-{index}"
+            handle_tag = f"territory-resize-handle-{index}"
             px, py = self.territory_world_to_canvas(x, z, map_width, map_height)
             try:
                 zone_radius = float(zone.attributes.get("r", "0"))
@@ -11966,13 +14446,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             fill = GRAPHITE_ACCENT_HOVER if active else GRAPHITE_PREFLIGHT if selected else layer_color
             width = 3 if active else 2 if selected else 1
             if scaled_radius > 0:
-                canvas.create_oval(px - scaled_radius, py - scaled_radius, px + scaled_radius, py + scaled_radius, outline=outline, width=width)
+                canvas.create_oval(px - scaled_radius, py - scaled_radius, px + scaled_radius, py + scaled_radius, outline=outline, width=width, tags=(zone_tag,))
             if active:
                 handle_offset = max(scaled_radius, 24.0)
                 handle_x = px + handle_offset
                 handle_y = py
                 handle_radius = 7
-                canvas.create_line(px, py, handle_x, handle_y, fill=GRAPHITE_ACCENT_HOVER, width=2)
+                canvas.create_line(px, py, handle_x, handle_y, fill=GRAPHITE_ACCENT_HOVER, width=2, tags=(zone_tag, handle_tag))
                 canvas.create_rectangle(
                     handle_x - handle_radius,
                     handle_y - handle_radius,
@@ -11981,12 +14461,25 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                     fill=GRAPHITE_ACCENT_HOVER,
                     outline="#ffffff",
                     width=2,
+                    tags=(zone_tag, handle_tag),
                 )
                 state["resize_handles"].append((index, handle_x, handle_y, max(14.0, handle_radius + 6)))
             icon_key = self.territory_zone_icon_key(zone)
-            marker_radius = self.draw_map_marker(canvas, px, py, icon_key, fill, active=active, selected=selected)
+            marker_radius = self.draw_map_marker(
+                canvas,
+                px,
+                py,
+                icon_key,
+                fill,
+                active=active,
+                selected=selected,
+                display_radius=scaled_radius,
+                tags=(zone_tag,),
+            )
+            if active:
+                canvas.tag_raise(handle_tag)
             if active or selected or label_limit:
-                canvas.create_text(px + 8, py - 8, text=zone.name, fill=GRAPHITE_TEXT, anchor="sw", font=("Segoe UI", 9, "bold" if active or selected else "normal"))
+                canvas.create_text(px + 8, py - 8, text=zone.name, fill=GRAPHITE_TEXT, anchor="sw", font=("Segoe UI", 9, "bold" if active or selected else "normal"), tags=(zone_tag,))
             state["drawn_zones"].append((index, px, py, max(8.0, scaled_radius), marker_radius))
         canvas.create_text(map_x1 + 8, map_y1 + 14, text="NW", fill=GRAPHITE_MUTED, anchor="w", font=("Segoe UI", 8, "bold"))
         canvas.create_text(map_x2 - 8, map_y2 - 14, text="SE", fill=GRAPHITE_MUTED, anchor="e", font=("Segoe UI", 8, "bold"))
@@ -12267,6 +14760,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                     state["resize_dirty"] = True
                     state["resize_preview_indices"] = list(state.get("resize_indices") or [resize_index])
                     self.draw_territory_resize_preview()
+            state["drag_x"] = event.x
+            state["drag_y"] = event.y
+            return
         elif state.get("drag_mode") == "move" and state.get("move_index") is not None:
             move_index = state["move_index"]
             if 0 <= move_index < len(self.territory_zones):
@@ -12282,6 +14778,25 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                     self.territory_editor_vars["x"].set(zone.attributes.get("x", ""))
                     self.territory_editor_vars["z"].set(zone.attributes.get("z", ""))
                     state["move_dirty"] = True
+                    new_px, new_py = self.territory_world_to_canvas(x, z, map_width, map_height)
+                    drawn_zones = list(state.get("drawn_zones", []))
+                    for drawn_index, drawn_zone in enumerate(drawn_zones):
+                        index, old_px, old_py, hit_radius, marker_radius = drawn_zone
+                        if index != move_index:
+                            continue
+                        move_dx = new_px - old_px
+                        move_dy = new_py - old_py
+                        self.territory_map_canvas.move(f"territory-zone-{move_index}", move_dx, move_dy)
+                        drawn_zones[drawn_index] = (index, new_px, new_py, hit_radius, marker_radius)
+                        state["drawn_zones"] = drawn_zones
+                        state["resize_handles"] = [
+                            (index, handle_x + move_dx, handle_y + move_dy, handle_radius) if index == move_index else (index, handle_x, handle_y, handle_radius)
+                            for index, handle_x, handle_y, handle_radius in state.get("resize_handles", [])
+                        ]
+                        break
+            state["drag_x"] = event.x
+            state["drag_y"] = event.y
+            return
         elif state.get("drag_mode") == "select":
             state["selection_rect"] = (state["press_x"], state["press_y"], event.x, event.y)
             item = state.get("selection_rect_item")
@@ -12679,9 +15194,63 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         return ""
 
     def territory_zone_icon_key(self, zone):
+        override = self.territory_icon_override(zone.source_path)
+        if override:
+            return override
         return self.map_marker_icon_key_for_text(
             " ".join([zone.name, self.territory_group_name(zone.source_path), os.path.basename(zone.source_path)])
         )
+
+    def territory_icon_override(self, source_path):
+        stored = self.saved_settings.get("territory_icons", {})
+        if not isinstance(stored, dict):
+            return ""
+        icon_key = str(stored.get(self.normalized_path(source_path), "") or "").strip().casefold()
+        valid_keys = {key for _label, key in MAP_MARKER_ICON_OPTIONS}
+        return icon_key if icon_key in valid_keys else ""
+
+    def selected_territory_icon_source_path(self):
+        group_key = self.current_territory_group_key or self.selected_territory_group_key()
+        if group_key:
+            return self.territory_group_key_source(group_key)
+        if self.current_territory_index is not None and 0 <= self.current_territory_index < len(self.territory_zones):
+            return self.territory_zones[self.current_territory_index].source_path
+        return ""
+
+    def update_territory_icon_control(self):
+        combo = self.territory_icon_combo
+        if combo is None:
+            return
+        source_path = self.selected_territory_icon_source_path()
+        if not source_path:
+            self.territory_icon_var.set("Auto")
+            combo.configure(state="disabled")
+            return
+        icon_key = self.territory_icon_override(source_path)
+        self.territory_icon_var.set(MAP_MARKER_ICON_LABELS.get(icon_key, "Auto"))
+        combo.configure(state="readonly")
+
+    def on_territory_icon_changed(self, event=None):
+        source_path = self.selected_territory_icon_source_path()
+        if not source_path:
+            self.update_territory_icon_control()
+            return
+        label = self.territory_icon_var.get()
+        icon_key = MAP_MARKER_ICON_KEYS.get(label, "")
+        stored = self.saved_settings.setdefault("territory_icons", {})
+        if not isinstance(stored, dict):
+            stored = {}
+            self.saved_settings["territory_icons"] = stored
+        source_key = self.normalized_path(source_path)
+        if icon_key:
+            stored[source_key] = icon_key
+        else:
+            stored.pop(source_key, None)
+            if not stored:
+                self.saved_settings.pop("territory_icons", None)
+        save_settings(self.saved_settings)
+        self.draw_territory_map()
+        self.log(f"Territory icon set to {label} for {self.source_display_name(source_path)}.", "success")
 
     def event_location_icon_key(self, event_entry, position=None):
         parts = [getattr(event_entry, "name", "")]
@@ -12717,7 +15286,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return None
         fg_r, fg_g, fg_b = self.parse_hex_color(foreground)
         pixels = []
-        for r, g, b, a in image.getdata():
+        pixels_data = image.get_flattened_data() if hasattr(image, "get_flattened_data") else image.getdata()
+        for r, g, b, a in pixels_data:
             luma = (r * 0.299) + (g * 0.587) + (b * 0.114)
             alpha = int(max(0, min(255, 255 - luma)) * (a / 255))
             pixels.append((fg_r, fg_g, fg_b, alpha))
@@ -12726,16 +15296,28 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.map_marker_icon_cache[cache_key] = rendered
         return rendered
 
-    def draw_map_marker(self, canvas, px, py, icon_key, fill, outline="#ffffff", active=False, selected=False):
+    def draw_map_marker(self, canvas, px, py, icon_key, fill, outline="#ffffff", active=False, selected=False, display_radius=0.0, tags=()):
+        try:
+            scaled_radius = float(display_radius or 0.0)
+        except (TypeError, ValueError):
+            scaled_radius = 0.0
+        if icon_key == "none":
+            return max(3.0, scaled_radius)
+        if icon_key and scaled_radius >= 4.0:
+            icon_size = max(8, min(512, int(round(scaled_radius * 2))))
+            icon = self.map_marker_icon_image(icon_key, icon_size, fill)
+            if icon is not None:
+                canvas.create_image(px, py, image=icon, tags=tags)
+                return max(scaled_radius, icon_size / 2)
         icon_size = 22 if active else 20 if selected else 17
         icon = self.map_marker_icon_image(icon_key, icon_size, "#ffffff")
         if icon is None:
             marker_radius = 7 if active else 6 if selected else 5
-            canvas.create_oval(px - marker_radius, py - marker_radius, px + marker_radius, py + marker_radius, fill=fill, outline=outline)
+            canvas.create_oval(px - marker_radius, py - marker_radius, px + marker_radius, py + marker_radius, fill=fill, outline=outline, tags=tags)
             return marker_radius
         radius = (icon_size / 2) + (5 if active else 4)
-        canvas.create_oval(px - radius, py - radius, px + radius, py + radius, fill=fill, outline=outline, width=2 if active or selected else 1)
-        canvas.create_image(px, py, image=icon)
+        canvas.create_oval(px - radius, py - radius, px + radius, py + radius, fill=fill, outline=outline, width=2 if active or selected else 1, tags=tags)
+        canvas.create_image(px, py, image=icon, tags=tags)
         return radius
 
     def territory_layer_entries(self):
@@ -12981,9 +15563,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         try:
             if kind == "group":
                 self.set_territory_group_filter_for_key(value)
+                self.current_territory_group_key = value
                 for key, variable in self.territory_layer_vars.items():
                     variable.set(key == value)
                 self.clear_territory_selection(announce=False)
+                self.update_territory_icon_control()
                 self.schedule_territory_map_draw(fast=True)
                 return
             if kind == "zone":
@@ -13031,6 +15615,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 for key, variable in self.territory_layer_vars.items():
                     variable.set(key == value)
                 self.clear_territory_selection(announce=False)
+                self.update_territory_icon_control()
                 self.schedule_territory_map_draw(fast=True)
                 return
             if kind == "zone":
@@ -13099,6 +15684,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if self.set_territory_group_filter_for_key(group_key):
             self.sync_territory_source_filter_to_group()
         self.ensure_territory_layer_visible(group_key)
+        self.update_territory_icon_control()
 
     def refresh_territory_layers(self):
         tree = self.territory_group_tree
@@ -13132,6 +15718,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                     self.territory_group_list_shell.grid()
             if self.territory_groups_toggle_button is not None:
                 self.territory_groups_toggle_button.configure(text="Expand" if self.territory_groups_collapsed_var.get() else "Collapse")
+            self.update_territory_icon_control()
         finally:
             self.refreshing_territory_layers = False
 
@@ -13290,6 +15877,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         elif group_path:
             self.ensure_territory_layer_visible(group_path)
         self.refresh_territory_table()
+        self.update_territory_icon_control()
 
     def on_territory_active_filter_changed(self):
         self.territory_default_group_applied = False
@@ -13893,6 +16481,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.refresh_territory_table()
         self.update_summary()
         self.log(f"Added custom territory source: {self.source_display_name(source_path)}. Use Add zone, then Save.", "success")
+        if messagebox.askyesno(APP_TITLE, f"Register this territory in cfgenvironment.xml now?\n\n{self.source_display_name(source_path)}"):
+            self.register_territory_source_in_environment(source_path)
 
     def delete_custom_territory_source(self):
         source_path = self.selected_territory_group_path() or self.selected_territory_edit_source_path()
@@ -14956,7 +17546,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 width = 3 if selected else 1
                 if scaled_radius > 0:
                     canvas.create_oval(px - scaled_radius, py - scaled_radius, px + scaled_radius, py + scaled_radius, outline=outline, width=width)
-                marker_radius = self.draw_map_marker(canvas, px, py, self.territory_zone_icon_key(zone), fill, active=selected, selected=selected)
+                marker_radius = self.draw_map_marker(canvas, px, py, self.territory_zone_icon_key(zone), fill, active=selected, selected=selected, display_radius=scaled_radius)
                 if selected or label_limit:
                     canvas.create_text(px + 8, py - 8, text=zone.name, fill=GRAPHITE_TEXT, anchor="sw", font=("Segoe UI", 9, "bold" if selected else "normal"))
                 hit_radius = max(8.0, scaled_radius, marker_radius)
@@ -15153,7 +17743,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             if zone_radius > 0:
                 scaled_radius = (zone_radius / map_width) * base_w * zoom
                 canvas.create_oval(px - scaled_radius, py - scaled_radius, px + scaled_radius, py + scaled_radius, outline=GRAPHITE_WARNING, width=2)
-            self.draw_map_marker(canvas, px, py, self.territory_zone_icon_key(zone), GRAPHITE_ACCENT_HOVER, active=True)
+            self.draw_map_marker(canvas, px, py, self.territory_zone_icon_key(zone), GRAPHITE_ACCENT_HOVER, active=True, display_radius=scaled_radius if zone_radius > 0 else 0.0)
             canvas.create_text(px + 8, py - 8, text=zone.name, fill=GRAPHITE_TEXT, anchor="sw", font=("Segoe UI", 9, "bold"))
 
         canvas.bind("<Configure>", draw)
@@ -15169,7 +17759,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.refresh_event_table()
             return
         entry = self.event_entries[index]
-        positions = self.event_location_positions(entry)
+        positions, direct_count, grouped_count, layout_count = self.event_position_metrics(entry)
         family, _label, _link_target = classify_event_name(entry.name)
         name_key = entry.name.casefold()
         error_names = {issue.name.casefold() for issue in self.event_issues if issue.severity == "error" and issue.name}
@@ -15199,6 +17789,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 entry.child_text("position"),
                 entry.child_text("limit"),
                 str(len(positions)),
+                str(direct_count),
+                str(grouped_count),
+                str(layout_count),
+                entry.child_text("secondary"),
             ),
             tags=(tag,) if tag else (),
         )
@@ -15553,17 +18147,25 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         cache_dir = self.local_map_asset_dir()
         try:
             for child in cache_dir.iterdir():
-                if child.name in {"custom", "custom_maps.json"}:
+                if child.name.casefold() == "storage_1" or child.name in {"custom", "custom_maps.json"}:
                     continue
                 if child.is_file():
                     child.unlink()
                 elif child.is_dir():
-                    for nested in child.rglob("*"):
-                        if nested.is_file():
-                            nested.unlink()
-                    for nested in sorted([path for path in child.rglob("*") if path.is_dir()], reverse=True):
-                        nested.rmdir()
-                    child.rmdir()
+                    directories = []
+                    protected_found = False
+                    for current_root, dirnames, filenames in os.walk(child, topdown=True):
+                        if any(name.casefold() == "storage_1" for name in dirnames):
+                            protected_found = True
+                        dirnames[:] = [name for name in dirnames if name.casefold() != "storage_1"]
+                        current_path = Path(current_root)
+                        directories.extend(current_path / name for name in dirnames)
+                        for filename in filenames:
+                            (current_path / filename).unlink()
+                    if not protected_found:
+                        for nested in sorted(directories, key=lambda path: len(path.parts), reverse=True):
+                            nested.rmdir()
+                        child.rmdir()
             self.map_manifest_cache = None
             self.log("Map asset cache cleared.", "muted")
         except OSError as exc:
@@ -15972,6 +18574,17 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return
         entry = self.event_entries[index]
         positions = self.event_location_positions(entry)
+        spawn_definitions = self.event_groups_for_entry(entry)
+        layout_by_name = {group.name.casefold(): group for group in self.event_group_definitions}
+        zone_radius = 0.0
+        for spawn_definition in spawn_definitions:
+            if spawn_definition.zone is None:
+                continue
+            try:
+                zone_radius = float(spawn_definition.zone.attributes.get("r", "0"))
+            except ValueError:
+                zone_radius = 0.0
+            break
         coords = [(position, self.spawn_position_xy(position)) for position in positions]
         coords = [(position, coord) for position, coord in coords if coord is not None]
         if not coords:
@@ -16118,14 +18731,32 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             draw_grid(base_w, base_h)
             for position, (x, z) in coords:
                 px, py = world_to_canvas(x, z)
-                try:
-                    zone_radius = float(position.attributes.get("r", "0"))
-                except ValueError:
-                    zone_radius = 0.0
                 if zone_radius > 0:
                     scaled_radius = (zone_radius / map_width) * base_w * state["zoom"]
                     canvas.create_oval(px - scaled_radius, py - scaled_radius, px + scaled_radius, py + scaled_radius, outline=GRAPHITE_WARNING, width=2)
                 self.draw_map_marker(canvas, px, py, self.event_location_icon_key(entry, position), GRAPHITE_ACCENT_HOVER)
+                layout_name = position.attributes.get("group", "").strip()
+                layout = layout_by_name.get(layout_name.casefold()) if layout_name else None
+                if layout is not None:
+                    try:
+                        angle = float(position.attributes.get("a", "0"))
+                    except ValueError:
+                        angle = 0.0
+                    if angle == -1:
+                        angle = 0.0
+                    radians = math.radians(angle)
+                    cos_angle = math.cos(radians)
+                    sin_angle = math.sin(radians)
+                    for child in layout.children:
+                        try:
+                            offset_x = float(child.attributes.get("x", "0"))
+                            offset_z = float(child.attributes.get("z", "0"))
+                        except ValueError:
+                            continue
+                        child_x = x + offset_x * cos_angle - offset_z * sin_angle
+                        child_z = z + offset_x * sin_angle + offset_z * cos_angle
+                        child_px, child_py = world_to_canvas(child_x, child_z)
+                        canvas.create_rectangle(child_px - 2, child_py - 2, child_px + 2, child_py + 2, fill=GRAPHITE_TEXT, outline=GRAPHITE_FIELD)
             canvas.create_text(map_x1 + 8, map_y1 + 14, text="NW", fill=GRAPHITE_MUTED, anchor="w", font=("Segoe UI", 8, "bold"))
             canvas.create_text(map_x2 - 8, map_y2 - 14, text="SE", fill=GRAPHITE_MUTED, anchor="e", font=("Segoe UI", 8, "bold"))
 
@@ -16185,6 +18816,38 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         window.after(20, lambda: center_window(window, self))
         window.after(50, lambda: (fit_map(), draw_map()))
 
+    def delete_selected_event_definition(self):
+        if self.current_event_index is None or not (0 <= self.current_event_index < len(self.event_entries)):
+            messagebox.showwarning(APP_TITLE, "Select an event first.")
+            return
+        entry = self.event_entries[self.current_event_index]
+        secondary_parents = [candidate for candidate in self.event_entries if candidate is not entry and candidate.child_text("secondary").casefold() == entry.name.casefold()]
+        if secondary_parents:
+            parent_names = ", ".join(candidate.name for candidate in secondary_parents[:8])
+            if not messagebox.askyesno(APP_TITLE, f"{entry.name} is referenced as a secondary event by:\n\n{parent_names}\n\nDeleting it leaves those references unresolved. Continue?"):
+                return
+        linked_spawns = [group for group in self.event_spawn_groups if group.name.casefold() == entry.name.casefold()]
+        choice = messagebox.askyesnocancel(
+            APP_TITLE,
+            f"Delete event {entry.name}?\n\nYes: delete event and {len(linked_spawns)} linked cfgeventspawns definition(s).\nNo: delete event only.\nCancel: keep everything.",
+        )
+        if choice is None:
+            return
+        affected_paths = {entry.source_path}
+        del self.event_entries[self.current_event_index]
+        if choice:
+            affected_paths.update(group.source_path for group in linked_spawns)
+            linked_ids = {id(group) for group in linked_spawns}
+            self.event_spawn_groups = [group for group in self.event_spawn_groups if id(group) not in linked_ids]
+        self.current_event_index = None
+        self.event_spawn_positions = event_spawn_positions_by_name(self.event_spawn_groups)
+        for source_path in affected_paths:
+            self.mark_source_dirty(source_path)
+        self.clear_event_editor()
+        self.schedule_validation_refresh()
+        self.refresh_event_table()
+        self.update_summary()
+
     def apply_selected_event(self):
         if self.current_event_index is None or not (0 <= self.current_event_index < len(self.event_entries)):
             messagebox.showwarning(APP_TITLE, "Select an event first.")
@@ -16195,9 +18858,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             for field in numeric_fields:
                 value = self.event_editor_vars[field].get().strip()
                 if value:
-                    int(value)
+                    if int(value) < 0:
+                        raise ValueError
         except ValueError:
-            messagebox.showerror(APP_TITLE, "Numeric event fields must contain integers.")
+            messagebox.showerror(APP_TITLE, "Numeric event fields must contain non-negative integers.")
             return
 
         name = self.event_editor_vars["name"].get().strip()
@@ -16205,25 +18869,54 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             messagebox.showerror(APP_TITLE, "Event name cannot be empty.")
             return
         old_name = entry.name
+        affected_paths = {entry.source_path}
+        if name.casefold() != old_name.casefold():
+            if any(candidate is not entry and candidate.name.casefold() == name.casefold() for candidate in self.event_entries):
+                messagebox.showerror(APP_TITLE, f"Event already exists: {name}")
+                return
+            linked_spawns = [group for group in self.event_spawn_groups if group.name.casefold() == old_name.casefold()]
+            secondary_refs = [candidate for candidate in self.event_entries if candidate is not entry and candidate.child_text("secondary").casefold() == old_name.casefold()]
+            impact = []
+            if linked_spawns:
+                impact.append(f"{len(linked_spawns)} cfgeventspawns definition(s)")
+            if secondary_refs:
+                impact.append(f"{len(secondary_refs)} secondary reference(s)")
+            if impact and not messagebox.askyesno(APP_TITLE, f"Rename {old_name} to {name} and update:\n\n" + "\n".join(impact) + "\n\nContinue?"):
+                return
+            if any(group.name.casefold() == name.casefold() and group.name.casefold() != old_name.casefold() for group in self.event_spawn_groups):
+                messagebox.showerror(APP_TITLE, f"cfgeventspawns.xml already contains: {name}")
+                return
+            for group in linked_spawns:
+                group.name = name
+                group.element.attrib["name"] = name
+                for position in group.positions:
+                    position.event_name = name
+                affected_paths.add(group.source_path)
+            for candidate in secondary_refs:
+                candidate.set_optional_child_text("secondary", name)
+                affected_paths.add(candidate.source_path)
         entry.name = name
         entry.element.attrib["name"] = name
         for field in numeric_fields + ("position", "limit"):
-            entry.set_child_text(field, self.event_editor_vars[field].get().strip())
+            entry.set_optional_child_text(field, self.event_editor_vars[field].get())
+        entry.set_optional_child_text("secondary", self.event_editor_vars["secondary"].get())
+        entry.set_flags({field: self.event_editor_vars[field].get() for field in ("deletable", "init_random", "remove_damaged")})
         active_value = self.event_editor_vars["active"].get().strip()
-        entry.set_child_text("active", EVENT_ACTIVE_TO_XML.get(active_value, active_value))
+        entry.set_optional_child_text("active", EVENT_ACTIVE_TO_XML.get(active_value, active_value))
         self.schedule_validation_refresh()
         self.update_visible_event_row(self.current_event_index)
         self.populate_event_editor(self.current_event_index)
         self.update_summary()
-        self.mark_source_dirty(entry.source_path)
+        for source_path in affected_paths:
+            self.mark_source_dirty(source_path)
         self.log(f"Updated event {old_name} -> {entry.name}.", "success")
 
     def load_event_validation_only(self):
-        file_issues = [issue for issue in self.validation_issues if not issue.name and self.normalized_path(issue.source_path) not in {self.normalized_path(path) for path in self.event_source_paths() + self.event_spawn_source_paths() + self.territory_source_paths()}]
+        file_issues = [issue for issue in self.validation_issues if not issue.name and self.normalized_path(issue.source_path) not in {self.normalized_path(path) for path in self.event_source_paths() + self.event_spawn_source_paths() + self.event_group_source_paths() + self.territory_source_paths() + ([self.environment_path] if self.environment_path else [])}]
         self.event_spawn_positions = event_spawn_positions_by_name(self.event_spawn_groups)
         self.event_issues = self.territory_issues + self.validate_event_relationships()
         self.mark_territory_related_event_cache_stale()
-        self.set_validation_issues(file_issues + self.validate_loaded_entries() + self.event_issues)
+        self.set_validation_issues(file_issues + self.environment_issues + self.validate_loaded_entries() + self.event_issues)
 
     def schedule_validation_refresh(self, delay=450):
         if self.validation_refresh_after_id:
@@ -16241,11 +18934,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.event_spawn_positions = event_spawn_positions_by_name(self.event_spawn_groups)
         self.event_issues = self.territory_issues + self.validate_event_relationships()
         self.mark_territory_related_event_cache_stale()
-        self.set_validation_issues(file_issues + self.validate_loaded_entries() + self.spawnable_issues + self.random_preset_issues + self.event_issues, mode=self.issue_mode)
+        self.set_validation_issues(file_issues + self.environment_issues + self.validate_loaded_entries() + self.spawnable_issues + self.random_preset_issues + self.event_issues, mode=self.issue_mode)
         if self.active_module == "events":
             self.refresh_event_table()
         elif self.active_module == "territories":
             self.refresh_territory_table()
+        elif self.active_module == "environment":
+            self.refresh_environment_view()
         elif self.active_module == "spawnabletypes":
             self.update_spawnable_summary()
         elif self.active_module == "randompresets":
@@ -16253,7 +18948,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         elif self.active_module == "types":
             self.refresh_table()
         else:
-            self.mark_module_views_stale("types", "spawnabletypes", "randompresets", "events", "territories", "ce_zones")
+            self.mark_module_views_stale("types", "spawnabletypes", "randompresets", "events", "environment", "territories", "ce_zones")
         self.refresh_dashboard()
         self.update_summary()
 
@@ -16263,19 +18958,27 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.random_preset_entries = []
         self.event_entries = []
         self.event_spawn_groups = []
+        self.event_group_definitions = []
         self.event_spawn_positions = {}
-        self.event_child_links_by_parent = {}
-        self.event_child_links_by_child = {}
+        self.event_secondary_links_by_parent = {}
+        self.event_secondary_links_by_secondary = {}
         self.territory_zones = []
         self.territory_groups = []
         self.spawnable_issues = []
         self.random_preset_issues = []
         self.territory_issues = []
         self.event_issues = []
+        self.environment_path = ""
+        self.environment_root = None
+        self.environment_original_text = ""
+        self.environment_issues = []
+        self.environment_selected_element = None
         self.original_entries = []
         self.original_spawnable_entries = []
         self.original_random_preset_entries = []
         self.original_event_entries = []
+        self.original_event_spawn_groups = []
+        self.original_event_group_definitions = []
         self.original_territory_zones = []
         self.original_territory_groups = []
         self.original_territory_groups = []
@@ -16354,13 +19057,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.active_usage_filter = None
         self.usage_filter_var.set("")
         self.source_listbox.delete(0, "end")
-        self.log_text.delete("1.0", "end")
         self.clear_editor()
         self.refresh_config_list()
         self.refresh_profile_config_list()
         self.refresh_spawnable_table()
         self.refresh_random_preset_table()
         self.refresh_event_table()
+        self.refresh_environment_view()
         self.refresh_ce_zones_layers()
         self.refresh_mapgroupproto_view()
         self.draw_ce_zones_map()
@@ -16457,8 +19160,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 return "spawnabletypes"
             if name == "cfgrandompresets.xml":
                 return "randompresets"
-            if name in {"events.xml", "cfgeventspawns.xml", "cfgenvironment.xml"}:
+            if name in {"events.xml", "cfgeventspawns.xml", "cfgeventgroups.xml"}:
                 return "events"
+            if name == "cfgenvironment.xml":
+                return "environment"
             if name.endswith("_territories.xml"):
                 return "territories"
             if name == "areaflags.map" or suffix == ".tga":
@@ -16469,7 +19174,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return "spawnabletypes"
         if source_key in {self.normalized_path(path) for path in self.random_preset_source_paths()}:
             return "randompresets"
-        if source_key in {self.normalized_path(path) for path in self.event_source_paths() + self.event_spawn_source_paths()}:
+        if source_key in {self.normalized_path(path) for path in self.event_source_paths() + self.event_spawn_source_paths() + self.event_group_source_paths()}:
             return "events"
         if source_key in {self.normalized_path(path) for path in self.territory_source_paths()}:
             return "territories"
@@ -16493,6 +19198,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "spawnabletypes": "Spawnabletypes",
             "randompresets": "Randompresets",
             "events": "Events",
+            "environment": "Environment",
             "territories": "Territories",
             "ce_zones": "CE Zones",
             "mapgroupproto": "Mapgroupproto",
@@ -16511,16 +19217,17 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "spawnabletypes": 1,
             "randompresets": 2,
             "events": 3,
-            "territories": 4,
-            "ce_zones": 5,
-            "mapgroupproto": 6,
-            "configs": 7,
-            "profiles": 8,
-            "weather": 9,
-            "definitions": 10,
-            "economy_core": 11,
-            "xml": 11,
-            "workspace": 12,
+            "environment": 4,
+            "territories": 5,
+            "ce_zones": 6,
+            "mapgroupproto": 7,
+            "configs": 8,
+            "profiles": 9,
+            "weather": 10,
+            "definitions": 11,
+            "economy_core": 12,
+            "xml": 13,
+            "workspace": 14,
         }
         return order.get(module_id, 99)
 
@@ -16550,6 +19257,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
         if module_id == "events":
             return ("event", issue.name, source_path) if issue.name else ("event_source", source_path)
+        if module_id == "environment":
+            return ("module", "environment")
         if module_id == "territories":
             return ("territory_zone", issue.name, source_path) if issue.name and source_path else ("territory_source", source_path) if source_path else ("module", "territories")
         if module_id == "ce_zones":
@@ -16588,6 +19297,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "spawnabletypes": ("module", "spawnabletypes"),
             "randompresets": ("module", "randompresets"),
             "events": ("module", "events"),
+            "environment": ("module", "environment"),
             "territories": ("module", "territories"),
             "ce_zones": ("module", "ce_zones"),
             "mapgroupproto": ("module", "mapgroupproto"),
@@ -16643,7 +19353,6 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.validate_mapgroupproto_current_text(show_success=False)
             mapgroupproto_issues = list(self.mapgroupproto_issues)
         self.set_validation_issues(file_issues + self.validate_loaded_entries() + self.spawnable_issues + self.random_preset_issues + self.event_issues + weather_issues + mapgroupproto_issues + self.validate_loaded_config_files(), mode="Workspace validation")
-        self.log_text.delete("1.0", "end")
         kept = f" Kept {len(self.analysis_issues)} economy hint(s)." if self.analysis_issues else ""
         self.log(f"Workspace validation complete.{kept}", "success")
         self.refresh_spawnable_table()
@@ -16656,7 +19365,6 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             messagebox.showwarning(APP_TITLE, "Load at least one supported file first.")
             return
         if not self.entries:
-            self.log_text.delete("1.0", "end")
             self.log("No type entries parsed. Fix XML syntax issues first.", "warning")
             self.log_issues()
             self.update_selected_issue_panel()
@@ -16670,7 +19378,6 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             progress.update_progress(2, 4, detail=f"Found {len(issues)} economy hint(s)")
             self.set_analysis_issues(issues)
             progress.update_progress(3, 4, detail="Refreshing issue views")
-            self.log_text.delete("1.0", "end")
             self.log("Economy analysis complete.", "success")
             self.refresh_issues_view()
             progress.update_progress(4, 4, detail="Complete")
@@ -19009,6 +21716,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
     def create_pre_save_backup(self, source_path):
+        if is_ignored_storage_path(source_path):
+            raise OSError("Access blocked: storage_1 is always ignored.")
         source = Path(source_path)
         if not source.is_file():
             return ""
@@ -19042,6 +21751,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def source_module_label(self, source_path):
         source_key = self.normalized_path(source_path)
+        if self.is_environment_source_path(source_path):
+            return "Environment"
         if source_key in {self.normalized_path(path) for path in self.loaded_paths}:
             return "Types"
         if source_key in {self.normalized_path(path) for path in self.spawnable_source_paths()}:
@@ -19068,8 +21779,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return "Randompresets"
         if name == "cfgeconomycore.xml":
             return "Economy Core"
+        if name == "cfgenvironment.xml":
+            return "Environment"
         if name == "mapgroupproto.xml":
             return "Mapgroupproto"
+        if name in {"cfgeventspawns.xml", "cfgeventgroups.xml"}:
+            return "Events"
         if name == "events.xml":
             return "Events"
         if name.endswith("_territories.xml"):
@@ -19079,6 +21794,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         return "Types" if suffix == ".xml" else "File"
 
     def backup_preview_text(self, backup_path, limit=200_000):
+        if is_ignored_storage_path(backup_path):
+            return "storage_1 is always ignored."
         path = Path(backup_path)
         try:
             data = path.read_bytes()
@@ -19108,6 +21825,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 continue
             source_path = info.get("source_path", source_key)
             backup_path = info.get("backup_path", "")
+            if is_ignored_storage_path(source_path) or is_ignored_storage_path(backup_path):
+                continue
             if not source_path or not backup_path or not Path(backup_path).is_file():
                 continue
             rows.append(
@@ -19235,6 +21954,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 return
             source_path = row["source_path"]
             backup_path = row["backup_path"]
+            if is_ignored_storage_path(source_path) or is_ignored_storage_path(backup_path):
+                messagebox.showwarning(APP_TITLE, "storage_1 is always ignored and cannot be restored.", parent=window)
+                return
             if not messagebox.askyesno(
                 APP_TITLE,
                 f"This will overwrite:\n{source_path}\n\nwith backup:\n{backup_path}\n\nContinue?",
@@ -19378,6 +22100,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         return "\n".join(lines)
 
     def ensure_source_writable(self, source_path):
+        if is_ignored_storage_path(source_path):
+            raise OSError("Access blocked: storage_1 is always ignored.")
         path = Path(source_path)
         parent = path.parent
         try:
@@ -19413,6 +22137,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def is_dedicated_module_source_path(self, path):
         source_key = self.normalized_path(path)
+        if self.is_environment_source_path(path):
+            return True
         if self.is_weather_source_path(path):
             return True
         if self.is_economycore_source_path(path):
@@ -19425,7 +22151,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return True
         if source_key in {self.normalized_path(random_path) for random_path in self.random_preset_source_paths()}:
             return True
-        if source_key in {self.normalized_path(event_path) for event_path in self.event_source_paths() + self.event_spawn_source_paths()}:
+        if source_key in {self.normalized_path(event_path) for event_path in self.event_source_paths() + self.event_spawn_source_paths() + self.event_group_source_paths()}:
             return True
         if source_key in {self.normalized_path(territory_path) for territory_path in self.territory_source_paths()}:
             return True
@@ -19444,6 +22170,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def is_economycore_source_path(self, path):
         economycore_path = self.__dict__.get("economycore_path", "")
         return bool(economycore_path) and self.normalized_path(path) == self.normalized_path(economycore_path)
+
+    def is_environment_source_path(self, path):
+        environment_path = self.__dict__.get("environment_path", "")
+        return bool(environment_path) and self.normalized_path(path) == self.normalized_path(environment_path)
 
     def is_mapgroupproto_source_path(self, path):
         mapgroupproto_path = self.__dict__.get("mapgroupproto_path", "")
@@ -19467,16 +22197,29 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         source_key = self.normalized_path(path)
         return source_key in {self.normalized_path(random_path) for random_path in self.random_preset_source_paths()}
 
+    def is_event_spawn_source_path(self, path):
+        source_key = self.normalized_path(path)
+        return source_key in {self.normalized_path(spawn_path) for spawn_path in self.event_spawn_source_paths()}
+
+    def is_event_group_source_path(self, path):
+        source_key = self.normalized_path(path)
+        return source_key in {self.normalized_path(group_path) for group_path in self.event_group_source_paths()}
+
     def all_save_source_paths(self):
         paths = []
         seen = set()
         weather_paths = [self.weather_path] if self.weather_path else []
         economycore_paths = [self.economycore_path] if self.economycore_path else []
+        environment_path = self.__dict__.get("environment_path", "")
+        environment_root = self.__dict__.get("environment_root")
+        environment_paths = [environment_path] if environment_path and environment_root is not None else []
         mapgroupproto_path = self.__dict__.get("mapgroupproto_path", "")
         if not mapgroupproto_path and getattr(self.__dict__.get("mission_workspace", None), "root_path", ""):
             mapgroupproto_path = self.find_mapgroupproto_path()
         mapgroupproto_paths = [mapgroupproto_path] if mapgroupproto_path else []
-        for path in self.loaded_paths + self.spawnable_source_paths() + self.random_preset_source_paths() + self.event_source_paths() + self.territory_source_paths() + weather_paths + economycore_paths + mapgroupproto_paths + self.config_paths + self.profile_config_paths:
+        for path in self.loaded_paths + self.spawnable_source_paths() + self.random_preset_source_paths() + self.event_source_paths() + self.event_spawn_source_paths() + self.event_group_source_paths() + self.territory_source_paths() + environment_paths + weather_paths + economycore_paths + mapgroupproto_paths + self.config_paths + self.profile_config_paths:
+            if is_ignored_storage_path(path):
+                continue
             key = self.normalized_path(path)
             if key in seen:
                 continue
@@ -19499,6 +22242,14 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def event_entries_for_source(self, entries, source_path):
         source_key = self.normalized_path(source_path)
         return [entry for entry in entries if self.normalized_path(entry.source_path) == source_key]
+
+    def event_spawn_groups_for_source(self, groups, source_path):
+        source_key = self.normalized_path(source_path)
+        return [group for group in groups if self.normalized_path(group.source_path) == source_key]
+
+    def event_group_definitions_for_source(self, groups, source_path):
+        source_key = self.normalized_path(source_path)
+        return [group for group in groups if self.normalized_path(group.source_path) == source_key]
 
     def territory_zones_for_source(self, zones, source_path):
         source_key = self.normalized_path(source_path)
@@ -19526,6 +22277,14 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 self.event_entries_for_source(self.original_event_entries, source_path),
                 self.event_entries_for_source(self.event_entries, source_path),
             )
+        if self.is_event_spawn_source_path(source_path):
+            before = [format_event_spawn_group_xml(group).strip() for group in self.event_spawn_groups_for_source(self.original_event_spawn_groups, source_path)]
+            after = [format_event_spawn_group_xml(group).strip() for group in self.event_spawn_groups_for_source(self.event_spawn_groups, source_path)]
+            return "No changes detected.\n" if before == after else f"CHANGED: cfgeventspawns.xml\nDefinitions: {len(before)} -> {len(after)}\n"
+        if self.is_event_group_source_path(source_path):
+            before = [format_event_group_definition_xml(group).strip() for group in self.event_group_definitions_for_source(self.original_event_group_definitions, source_path)]
+            after = [format_event_group_definition_xml(group).strip() for group in self.event_group_definitions_for_source(self.event_group_definitions, source_path)]
+            return "No changes detected.\n" if before == after else f"CHANGED: cfgeventgroups.xml\nGroups: {len(before)} -> {len(after)}\n"
         if self.normalized_path(source_path) in {self.normalized_path(path) for path in self.territory_source_paths()}:
             return create_territory_change_report(
                 self.territory_zones_for_source(self.original_territory_zones, source_path),
@@ -19544,6 +22303,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def source_has_changes(self, source_path):
         source_key = self.normalized_path(source_path)
+        if self.is_environment_source_path(source_path):
+            return self.environment_root is not None and format_cfgenvironment_xml(self.environment_root) != self.environment_original_text
         if self.is_economycore_source_path(source_path):
             return self.economycore_current_text != self.economycore_original_text
         if self.is_mapgroupproto_source_path(source_path):
@@ -19557,6 +22318,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return self.config_current_texts.get(source_key, "") != self.config_original_texts.get(source_key, "")
         if source_key in {self.normalized_path(path) for path in self.event_source_paths()}:
             return [format_event_xml(entry).strip() for entry in self.event_entries_for_source(self.original_event_entries, source_path)] != [format_event_xml(entry).strip() for entry in self.event_entries_for_source(self.event_entries, source_path)]
+        if self.is_event_spawn_source_path(source_path):
+            return [format_event_spawn_group_xml(group).strip() for group in self.event_spawn_groups_for_source(self.original_event_spawn_groups, source_path)] != [format_event_spawn_group_xml(group).strip() for group in self.event_spawn_groups_for_source(self.event_spawn_groups, source_path)]
+        if self.is_event_group_source_path(source_path):
+            return [format_event_group_definition_xml(group).strip() for group in self.event_group_definitions_for_source(self.original_event_group_definitions, source_path)] != [format_event_group_definition_xml(group).strip() for group in self.event_group_definitions_for_source(self.event_group_definitions, source_path)]
         if self.is_spawnable_source_path(source_path):
             return [format_spawnable_type_xml(entry).strip() for entry in self.spawnable_entries_for_source(self.original_spawnable_entries, source_path)] != [format_spawnable_type_xml(entry).strip() for entry in self.spawnable_entries_for_source(self.spawnable_entries, source_path)]
         if self.is_random_preset_source_path(source_path):
@@ -19572,6 +22337,15 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def source_save_sanity_warnings(self, source_path):
         source_key = self.normalized_path(source_path)
+        if self.is_environment_source_path(source_path):
+            if self.environment_root is None:
+                return ["environment XML is not loaded"]
+            warnings = []
+            if self.environment_root.tag != "env":
+                warnings.append(f"environment XML root is <{self.environment_root.tag}>")
+            if self.environment_root.find("territories") is None:
+                warnings.append("environment XML has no territories section")
+            return warnings
         if self.is_weather_source_path(source_path):
             return []
         if self.is_economycore_source_path(source_path):
@@ -19612,6 +22386,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if source_key in {self.normalized_path(path) for path in self.event_source_paths()}:
             if not self.event_entries_for_source(self.event_entries, source_path):
                 warnings.append("event output contains no event entries")
+            return warnings
+        if self.is_event_spawn_source_path(source_path):
+            return warnings
+        if self.is_event_group_source_path(source_path):
             return warnings
         if self.is_spawnable_source_path(source_path):
             if not self.spawnable_entries_for_source(self.spawnable_entries, source_path):
@@ -19682,6 +22460,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         return self.normalized_path(source_path) in self.dirty_source_keys_cache
 
     def current_save_source_path(self):
+        if self.active_module == "environment":
+            return self.environment_source_path()
         if self.active_module == "weather":
             return self.weather_path
         if self.active_module == "economy_core":
@@ -19728,12 +22508,22 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         return ""
 
     def save_source_file(self, source_path, allow_suspicious=False):
+        if is_ignored_storage_path(source_path):
+            raise OSError("Access blocked: storage_1 is always ignored.")
         source_key = self.normalized_path(source_path)
         if not allow_suspicious:
             warnings = self.source_save_sanity_warnings(source_path)
             if warnings:
                 raise OSError(f"Suspicious save refused for {source_path}: {'; '.join(warnings)}")
         self.ensure_source_writable(source_path)
+        if self.is_environment_source_path(source_path):
+            if self.environment_root is None:
+                raise OSError("Environment XML is not loaded, save blocked.")
+            if Path(source_path).is_file():
+                self.create_pre_save_backup(source_path)
+            count = write_cfgenvironment_file(self.environment_root, source_path)
+            self.sync_environment_workspace_links()
+            return count
         if self.is_economycore_source_path(source_path):
             try:
                 self.parse_economycore_root_from_text(self.economycore_current_text)
@@ -19763,6 +22553,16 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.create_pre_save_backup(source_path)
             Path(source_path).write_text(self.config_current_texts.get(source_key, ""), encoding="utf-8")
             return len(self.config_current_texts.get(source_key, "").splitlines())
+        if self.is_event_spawn_source_path(source_path):
+            current_groups = self.event_spawn_groups_for_source(self.event_spawn_groups, source_path)
+            self.create_pre_save_backup(source_path)
+            write_event_spawns_file(current_groups, source_path)
+            return len(current_groups)
+        if self.is_event_group_source_path(source_path):
+            current_groups = self.event_group_definitions_for_source(self.event_group_definitions, source_path)
+            self.create_pre_save_backup(source_path)
+            write_event_groups_file(current_groups, source_path)
+            return len(current_groups)
         if self.normalized_path(source_path) in {self.normalized_path(path) for path in self.event_source_paths()}:
             current_events = self.event_entries_for_source(self.event_entries, source_path)
             self.create_pre_save_backup(source_path)
@@ -19793,7 +22593,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def mark_source_saved(self, source_path):
         source_key = self.normalized_path(source_path)
-        if self.is_economycore_source_path(source_path):
+        if self.is_environment_source_path(source_path):
+            self.environment_original_text = format_cfgenvironment_xml(self.environment_root) if self.environment_root is not None else ""
+            if self.mission_workspace and source_path not in self.mission_workspace.cfgenvironment_paths:
+                self.mission_workspace.cfgenvironment_paths.append(source_path)
+        elif self.is_economycore_source_path(source_path):
             self.economycore_original_text = self.economycore_current_text
             if self.mission_workspace and source_path not in self.mission_workspace.cfgeconomycore_paths:
                 self.mission_workspace.cfgeconomycore_paths.append(source_path)
@@ -19805,6 +22609,18 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         elif self.is_config_source_path(source_path):
             if source_key in self.config_current_texts:
                 self.config_original_texts[source_key] = self.config_current_texts.get(source_key, "")
+        elif self.is_event_spawn_source_path(source_path):
+            self.original_event_spawn_groups = [
+                group for group in self.original_event_spawn_groups
+                if self.normalized_path(group.source_path) != source_key
+            ]
+            self.original_event_spawn_groups.extend(group.clone() for group in self.event_spawn_groups_for_source(self.event_spawn_groups, source_path))
+        elif self.is_event_group_source_path(source_path):
+            self.original_event_group_definitions = [
+                group for group in self.original_event_group_definitions
+                if self.normalized_path(group.source_path) != source_key
+            ]
+            self.original_event_group_definitions.extend(group.clone() for group in self.event_group_definitions_for_source(self.event_group_definitions, source_path))
         elif source_key in {self.normalized_path(path) for path in self.event_source_paths()}:
             self.original_event_entries = [
                 entry
@@ -19854,9 +22670,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.original_spawnable_entries = [entry.clone() for entry in self.spawnable_entries]
         self.original_random_preset_entries = [entry.clone() for entry in self.random_preset_entries]
         self.original_event_entries = [entry.clone() for entry in self.event_entries]
+        self.original_event_spawn_groups = [group.clone() for group in self.event_spawn_groups]
+        self.original_event_group_definitions = [group.clone() for group in self.event_group_definitions]
         self.original_territory_zones = [zone.clone() for zone in self.territory_zones]
         self.original_territory_groups = [group.clone() for group in self.territory_groups]
         self.original_territory_groups = [group.clone() for group in self.territory_groups]
+        environment_root = self.__dict__.get("environment_root")
+        self.environment_original_text = format_cfgenvironment_xml(environment_root) if environment_root is not None else ""
         self.original_weather_values = dict(self.weather_values_from_vars())
         self.economycore_original_text = self.economycore_current_text
         self.config_original_texts = dict(self.config_current_texts)
@@ -19868,6 +22688,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         spawnable_paths = [path for path in source_paths if self.is_spawnable_source_path(path)]
         random_preset_paths = [path for path in source_paths if self.is_random_preset_source_path(path)]
         event_paths = [path for path in source_paths if self.normalized_path(path) in {self.normalized_path(event_path) for event_path in self.event_source_paths()}]
+        event_spawn_paths = [path for path in source_paths if self.is_event_spawn_source_path(path)]
+        event_group_paths = [path for path in source_paths if self.is_event_group_source_path(path)]
         territory_paths = [path for path in source_paths if self.normalized_path(path) in {self.normalized_path(territory_path) for territory_path in self.territory_source_paths()}]
         reports = []
         if type_paths:
@@ -19890,6 +22712,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 self.entries_for_sources(self.original_event_entries, event_paths),
                 self.entries_for_sources(self.event_entries, event_paths),
             ))
+        reports.extend(self.change_report_for_source(path) for path in event_spawn_paths + event_group_paths)
         if territory_paths:
             reports.append(create_territory_change_report(
                 self.entries_for_sources(self.original_territory_zones, territory_paths),
@@ -19974,7 +22797,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.show_change_report_preview(report)
 
     def save_original(self):
-        if not self.entries and not self.spawnable_entries and not self.random_preset_entries and not self.event_entries and not self.territory_zones and not self.economycore_path and not self.config_paths and not self.profile_config_paths:
+        if not self.entries and not self.spawnable_entries and not self.random_preset_entries and not self.event_entries and not self.territory_zones and not self.economycore_path and self.environment_root is None and not self.config_paths and not self.profile_config_paths:
             messagebox.showwarning(APP_TITLE, "Load one supported file first.")
             return
         source_path = self.current_save_source_path()
@@ -19990,7 +22813,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return
         if not self.confirm_source_save_sanity([source_path]):
             return
-        if changed and not self.is_config_source_path(source_path) and not self.is_economycore_source_path(source_path):
+        if changed and not self.is_config_source_path(source_path) and not self.is_economycore_source_path(source_path) and not self.is_environment_source_path(source_path):
             self.auto_save_change_report([source_path])
 
         try:
@@ -20027,7 +22850,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return
         if not self.confirm_source_save_sanity(save_paths):
             return
-        report_paths = [path for path in save_paths if not self.is_config_source_path(path) and not self.is_economycore_source_path(path)]
+        report_paths = [path for path in save_paths if not self.is_config_source_path(path) and not self.is_economycore_source_path(path) and not self.is_environment_source_path(path)]
         if report_paths:
             self.auto_save_change_report(report_paths)
 
@@ -20036,7 +22859,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             for source_path in save_paths:
                 entry_count = self.save_source_file(source_path, allow_suspicious=True)
                 saved.append((source_path, entry_count))
-        except OSError as exc:
+        except (OSError, ValueError, ET.ParseError) as exc:
             messagebox.showerror(APP_TITLE, f"Save All failed:\n{exc}")
             return
 
@@ -20055,21 +22878,27 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         infos = [issue for issue in self.issues if issue.severity == "info"]
         unknown_relations = [issue for issue in warnings if "Unknown " in issue.message and "cfglimitsdefinition.xml" in issue.message]
         event_paths = self.event_source_paths()
+        event_spawn_paths = self.event_spawn_source_paths()
+        event_group_paths = self.event_group_source_paths()
         spawnable_paths = self.spawnable_source_paths()
         random_preset_paths = self.random_preset_source_paths()
         territory_paths = self.territory_source_paths()
         economycore_paths = [self.economycore_path] if self.economycore_path else []
+        environment_path = self.__dict__.get("environment_path", "")
+        environment_root = self.__dict__.get("environment_root")
+        environment_paths = [environment_path] if environment_path and environment_root is not None else []
         dirty_type_paths = [path for path in self.loaded_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
         dirty_spawnable_paths = [path for path in spawnable_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
         dirty_random_preset_paths = [path for path in random_preset_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
-        dirty_event_paths = [path for path in event_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
+        dirty_event_paths = [path for path in event_paths + event_spawn_paths + event_group_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
         dirty_territory_paths = [path for path in territory_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
+        dirty_environment_paths = [path for path in environment_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
         dirty_economycore_paths = [path for path in economycore_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
         mapgroupproto_paths = [self.mapgroupproto_path] if self.mapgroupproto_path else []
         dirty_mapgroupproto_paths = [path for path in mapgroupproto_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
         dirty_config_paths = [path for path in self.config_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
         dirty_profile_paths = [path for path in self.profile_config_paths if self.normalized_path(path) in self.dirty_source_keys_cache]
-        dirty_paths = dirty_type_paths + dirty_spawnable_paths + dirty_random_preset_paths + dirty_event_paths + dirty_territory_paths + dirty_economycore_paths + dirty_mapgroupproto_paths + dirty_config_paths + dirty_profile_paths
+        dirty_paths = dirty_type_paths + dirty_spawnable_paths + dirty_random_preset_paths + dirty_event_paths + dirty_environment_paths + dirty_territory_paths + dirty_economycore_paths + dirty_mapgroupproto_paths + dirty_config_paths + dirty_profile_paths
         definition_count = sum(len(values) for values in self.relation_definitions.values())
         if self.mission_workspace is not None:
             workspace = self.mission_workspace.root_path
@@ -20084,10 +22913,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "spawnable_entries": str(len(self.spawnable_entries)),
             "random_preset_entries": str(len(self.random_preset_entries)),
             "events": str(len(self.event_entries)),
-            "sources": f"{len(self.loaded_paths)} type, {len(spawnable_paths)} spawnabletype, {len(random_preset_paths)} randompreset, {len(economycore_paths)} economy core, {len(mapgroupproto_paths)} mapgroupproto",
+            "sources": f"{len(self.loaded_paths)} type, {len(spawnable_paths)} spawnabletype, {len(random_preset_paths)} randompreset, {len(event_paths)} events, {len(event_spawn_paths)} event spawns, {len(event_group_paths)} event groups, {len(environment_paths)} environment, {len(economycore_paths)} economy core, {len(mapgroupproto_paths)} mapgroupproto",
             "configs": f"{len(self.config_paths)} mission, {len(self.profile_config_paths)} profile",
             "definitions": f"{definition_count} value(s)",
-            "dirty": f"{len(dirty_type_paths)} type source(s), {len(dirty_spawnable_paths)} spawnabletype source(s), {len(dirty_random_preset_paths)} randompreset source(s), {len(dirty_event_paths)} event source(s), {len(dirty_territory_paths)} territory source(s), {len(dirty_economycore_paths)} economy core source(s), {len(dirty_mapgroupproto_paths)} mapgroupproto source(s), {len(dirty_config_paths)} config source(s), {len(dirty_profile_paths)} profile source(s), {'definitions dirty' if self.definitions_dirty else 'definitions clean'}",
+            "dirty": f"{len(dirty_type_paths)} type source(s), {len(dirty_spawnable_paths)} spawnabletype source(s), {len(dirty_random_preset_paths)} randompreset source(s), {len(dirty_event_paths)} event source(s), {len(dirty_environment_paths)} environment source(s), {len(dirty_territory_paths)} territory source(s), {len(dirty_economycore_paths)} economy core source(s), {len(dirty_mapgroupproto_paths)} mapgroupproto source(s), {len(dirty_config_paths)} config source(s), {len(dirty_profile_paths)} profile source(s), {'definitions dirty' if self.definitions_dirty else 'definitions clean'}",
             "errors": f"Errors: {len(errors)}",
             "warnings": f"Warnings: {len(warnings)}",
             "hints": f"Hints: {len(infos)}",
@@ -20120,6 +22949,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 add_dashboard_item(f"  * {self.source_display_name(path)}", ("random_preset_source", path))
             for path in dirty_event_paths:
                 add_dashboard_item(f"  * {self.source_display_name(path)}", ("event_source", path))
+            for path in dirty_environment_paths:
+                add_dashboard_item(f"  * {self.source_display_name(path)}", ("module", "environment"))
             for path in dirty_territory_paths:
                 add_dashboard_item(f"  * {self.source_display_name(path)}", ("territory_source", path))
             for path in dirty_economycore_paths:
@@ -20187,7 +23018,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def register_file_drop(self):
         if not TKDND_AVAILABLE:
             return
-        for widget in [self, self.tree, self.source_listbox, self.log_text]:
+        for widget in [self, self.tree, self.source_listbox]:
             try:
                 widget.drop_target_register(DND_FILES)
                 widget.dnd_bind("<<Drop>>", self.on_drop_files)

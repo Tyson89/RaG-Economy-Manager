@@ -6,8 +6,9 @@ License: Creative Commons Attribution 3.0 Unported (CC BY 3.0)
 Source: https://game-icons.net/
 
 Icons currently referenced by RaG Economy Manager:
-- Icons made by Delapouite: bear-head, chicken, cow, horse-head, rabbit-head, shambling-zombie, sheep
-- Icons made by Lorc: fox-head, wolf-head
-- Icons made by Caro Asercion: boar, deer-head
+- Icons made by Carl Olsen: spider-alt
+- Icons made by Caro Asercion: barn-owl, boar, deer-head, hyena-head
+- Icons made by Delapouite: bat, bear-head, bison, buffalo-head, chicken, cow, eagle-head, fish-monster, giant, griffin-symbol, horse-head, mouse, rabbit-head, rat, shambling-zombie, shark-fin, sheep, sitting-dog, tiger, vampire-dracula
+- Icons made by Faithtoken: dragon-head
+- Icons made by Lorc: cat, croc-jaws, dinosaur-rex, fox-head, frog, hydra, lion, monster-grasp, raven, scorpion, snake, stag-head, werewolf, wolf-head
 - Icons made by Skoll: goat, pig
-

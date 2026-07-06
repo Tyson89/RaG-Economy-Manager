@@ -2,7 +2,7 @@
 
 RaG Economy Manager is a Windows beta tool for DayZ server owners who need to inspect, edit, validate, and explain mission economy files without hand-editing every XML file blind.
 
-Current version: `0.80 Beta`
+Current version: `0.81 Beta`
 
 License: Freeware - Proprietary / All Rights Reserved
 
@@ -23,7 +23,8 @@ See `LICENSE.txt` for full terms. Third-party asset licences remain covered by `
 - Randompresets: `cfgrandompresets.xml`
 - Definitions: `cfglimitsdefinition.xml`
 - Economy Core: `cfgeconomycore.xml`
-- Events: `events.xml`, `cfgeventspawns.xml`, `cfgenvironment.xml`, and linked territory files
+- Events: `events.xml`, `cfgeventspawns.xml`, and `cfgeventgroups.xml`
+- Environment: `cfgenvironment.xml` territory registrations, populations, agents, spawns, and runtime limits
 - Territories: env `*_territories.xml` files with map editing
 - CE Zones: DayZ CE Tool usage flags, value tiers, water, key points, and paint layers
 - Mapgroupproto: `mapgroupproto.xml` loot prototype groups, containers, filters, and points
@@ -59,6 +60,10 @@ See `LICENSE.txt` for full terms. Third-party asset licences remain covered by `
 ### Events
 
 ![Events](screenshots/Events.png)
+
+### Environment
+
+![Environment](screenshots/Environment.png)
 
 ### Territories
 
@@ -127,6 +132,8 @@ Basic workflow:
 - Economy Core editor for CE managed classes, server defaults, and extra economy files
 - Type reference actions for Spawnabletypes and Randompresets
 - Events editor with child events, active/position/limit dropdowns, relationship analysis, and map plotting
+- Event System editor for `cfgeventspawns.xml` positions/zones and `cfgeventgroups.xml` layouts, including add/edit/delete, filtered classname/group choices, map batch placement, drag movement, rotation, and source-safe saves
+- Environment editor for `cfgenvironment.xml` file registrations, territory mappings, populations, agents, spawn classnames, and explained runtime settings
 - Territories map editor with grouped layers, box selection, Ctrl multi-select, Alt pan, move, resize, add, duplicate, delete, undo, and redo
 - CE Zones viewer for official CE Tool project XML, usage paint layers, value tier layers, water/key point overlays, and matching Types filtering
 - Mapgroupproto viewer/editor for loot prototype groups, container filters, relative spawn points, placement counts, matching item candidates, search/filter, exact issue jumps, add group/container actions, and comment/delete cleanup
@@ -161,6 +168,7 @@ Events:
 
 - Disabled events are skipped by relationship validation.
 - Vehicle/fixed events commonly use `cfgeventspawns.xml`.
+- Spawn positions can reference named layouts from `cfgeventgroups.xml`; missing event, group, and secondary references are reported.
 - Animal and infected workflows often resolve through `cfgenvironment.xml` and env territory XML.
 - Missing infected territory zones are usually hints, because static situations can legitimately use them.
 - Animal/Ambient missing mappings are more likely warnings.
@@ -195,6 +203,8 @@ The app does not merge all files into one output. If your mission uses split typ
 Module-owned files are saved from their module, not from the generic Configs editor. For example, `db\types.xml`, `db\events.xml`, `db\cfgspawnabletypes.xml`, `db\cfgrandompresets.xml`, `cfgeconomycore.xml`, definition files, weather files, and territory files should be edited and saved through their dedicated category. This prevents the raw Configs editor from accidentally overwriting structured economy files.
 
 Before overwriting a file, the app checks whether the target can be written. If a mission lives inside Steam or `Program Files`, Windows may block writes to files under `db\`. In that case, copy the mission to a writable work folder, remove read-only flags, close any running server/editor that has the file locked, or run the app with higher permissions if you intentionally work inside the protected folder.
+
+Mission `storage_1` folders are always excluded from discovery, loading, validation, backup, restore, and save operations.
 
 Rolling backups are stored locally under:
 
@@ -307,7 +317,7 @@ cfglimitsdefinition.xml
 mapgrouppos.xml
 ```
 
-It reports duplicate groups, invalid or unknown relation names, containers that match no loaded type entries, groups without containers, containers without points, bad point coordinates/range/height values, lootmax mismatches, prototypes not placed on the map, and placed `mapgrouppos.xml` objects without a matching prototype.
+It reports duplicate groups, invalid or unknown relation names, containers that match no loaded type entries, groups without containers, containers without points, bad point coordinates/range/height values, and placed `mapgrouppos.xml` objects without a matching prototype. Reusable prototypes without placed instances and group/container lootmax differences are not treated as warnings.
 
 The module keeps the full XML source internally and shows a read-only selected-group XML preview for inspection. Users can search groups, filter for missing category/usage/value/tag filters or zero matching items, click validation issues to jump to exact groups, add groups, add containers, edit selected groups/containers/points, and comment out selected groups, containers, or points without rerunning full validation.
 
@@ -364,6 +374,6 @@ Tools can also scan mission subfolders for split `types`, `spawnabletypes`, and 
 - Loot distribution and rarity balancing tools
 - Advanced Mapgroupproto editing for group duplication, point add/delete workflows, and dispatch/proxy blocks
 - Workspace project save/restore for recent missions, selected map, filters, active module, and layout state
-- Stronger DayZ-aware editors for `globals.xml`, `economy.xml`, `cfgeventspawns.xml`, and `cfgplayerspawnpoints.xml`
+- Stronger DayZ-aware editors for `globals.xml`, `economy.xml`, and `cfgplayerspawnpoints.xml`
 - Wider undo/redo coverage
 - Optional remote/SFTP workflow with dry-run diff, backups, and rollback guidance
