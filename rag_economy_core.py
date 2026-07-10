@@ -2805,6 +2805,10 @@ def parse_cfgeconomycore_randompresets(path: str | os.PathLike[str], mission_roo
     return parse_cfgeconomycore_file_refs(path, mission_root, "randompresets", "random presets")
 
 
+def parse_cfgeconomycore_events(path: str | os.PathLike[str], mission_root: str | os.PathLike[str]) -> tuple[list[str], list[ValidationIssue]]:
+    return parse_cfgeconomycore_file_refs(path, mission_root, "events", "events")
+
+
 def weather_default_values() -> dict[str, str]:
     return dict(WEATHER_DEFAULT_VALUES)
 
@@ -3657,6 +3661,9 @@ def discover_mission_workspace(root_path: str | os.PathLike[str]) -> MissionWork
         ce_random_preset_paths, ce_random_preset_issues = parse_cfgeconomycore_randompresets(economycore_path, root)
         random_preset_paths.extend(ce_random_preset_paths)
         issues.extend(ce_random_preset_issues)
+        ce_event_paths, ce_event_issues = parse_cfgeconomycore_events(economycore_path, root)
+        event_paths.extend(ce_event_paths)
+        issues.extend(ce_event_issues)
     else:
         issues.append(ValidationIssue("info", "", "No cfgeconomycore.xml found in mission folder.", str(root), "Add cfgeconomycore.xml if the mission uses CE folders with additional type files."))
 

@@ -216,6 +216,46 @@ MAP_ASSET_REPO = "Tyson89/RaG-Economy-Maps"
 MAP_ASSET_RELEASE_API = f"https://api.github.com/repos/{MAP_ASSET_REPO}/releases/latest"
 MAP_ASSET_CONTENTS_API = f"https://api.github.com/repos/{MAP_ASSET_REPO}/contents"
 MAP_MANIFEST_ASSET_NAMES = ("manifest.json", "map_assets_manifest.json", "maps.json")
+DEFAULT_MAP_WORLD_SIZES = {
+    "chernarusplus": 15360.0,
+    "chernarusplusgloom": 15360.0,
+    "banov": 15360.0,
+    "namalsk": 12800.0,
+    "enoch": 12800.0,
+    "enochgloom": 12800.0,
+    "takistanplus": 12800.0,
+    "esseker": 12800.0,
+    "deerisle": 16384.0,
+    "rostow": 14336.0,
+    "iztek": 8192.0,
+    "valning": 10240.0,
+    "pripyat": 20480.0,
+    "yiprit": 20480.0,
+    "barrington": 10240.0,
+    "vela": 10240.0,
+    "chiemsee": 10240.0,
+    "melkart": 20480.0,
+    "thezone": 20480.0,
+    "capare": 20480.0,
+    "nhchernobyl": 20480.0,
+    "nukezzone": 15360.0,
+    "lux": 15360.0,
+    "vis_island": 20480.0,
+    "bearisland": 10240.0,
+    "fogfall": 20480.0,
+    "swansisland": 2048.0,
+    "anastara": 10240.0,
+    "alteria": 8192.0,
+    "bitterroot": 12288.0,
+    "sakhal": 15360.0,
+    "arsteinen": 15360.0,
+    "raman": 32768.0,
+    "northtakistan": 12288.0,
+    "greencounty": 10240.0,
+    "hashima": 5120.0,
+    "deadfall": 10240.0,
+    "pnw": 10240.0,
+}
 DEFAULT_MAP_ASSETS = {
     "chernarusplus": {
         "label": "Chernarus",
@@ -245,7 +285,24 @@ DEFAULT_MAP_ASSETS = {
         "file": "sakhal.png",
         "aliases": ["sakhal"],
     },
+    "namalsk": {
+        "label": "Namalsk",
+        "folder": "Namalsk",
+        "world_size": 12800.0,
+        "file": "namalsk.png",
+        "aliases": ["namalsk", "dayzoffline.namalsk"],
+    },
 }
+for _map_key, _world_size in DEFAULT_MAP_WORLD_SIZES.items():
+    DEFAULT_MAP_ASSETS.setdefault(
+        _map_key,
+        {
+            "label": _map_key.replace("_", " ").title(),
+            "world_size": _world_size,
+            "file": f"{_map_key}.png",
+            "aliases": [_map_key],
+        },
+    )
 MAP_MARKER_ICON_FILES = {
     "bear": os.path.join("assets", "map_icons", "bear.png"),
     "wolf": os.path.join("assets", "map_icons", "wolf.png"),
@@ -1065,6 +1122,44 @@ def map_canvas_to_world(canvas_x, canvas_y, offset_x, offset_y, zoom, base_width
     if image_x < 0 or image_y < 0 or image_x > base_width or image_y > base_height:
         return None
     return image_x / base_width * map_width, (base_height - image_y) / base_height * map_height
+
+
+def map_world_size_from_info(map_info, default=15360.0):
+    for key in ("world_size", "worldSize", "worldsize", "world", "size"):
+        if key not in map_info:
+            continue
+        try:
+            value = float(map_info.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return float(default)
+
+
+def map_info_has_world_size(map_info):
+    if not isinstance(map_info, dict):
+        return False
+    for key in ("world_size", "worldSize", "worldsize", "world", "size"):
+        if key in map_info:
+            try:
+                return float(map_info.get(key)) > 0
+            except (TypeError, ValueError):
+                return False
+    return False
+
+
+def known_map_world_size(map_key, map_info=None):
+    candidates = [str(map_key or "").casefold()]
+    if isinstance(map_info, dict):
+        candidates.extend(str(alias or "").casefold() for alias in map_info.get("aliases", []) if str(alias or "").strip())
+        folder = str(map_info.get("folder", "") or "").casefold()
+        if folder:
+            candidates.append(folder)
+    for candidate in candidates:
+        if candidate in DEFAULT_MAP_WORLD_SIZES:
+            return DEFAULT_MAP_WORLD_SIZES[candidate]
+    return None
 
 
 def format_event_coordinate(value):
@@ -18095,6 +18190,37 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
+    def map_world_size_overrides(self):
+        overrides = self.saved_settings.get("map_world_size_overrides", {})
+        return overrides if isinstance(overrides, dict) else {}
+
+    def map_world_size_override(self, map_key):
+        try:
+            value = float(self.map_world_size_overrides().get(str(map_key or "").casefold(), 0))
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def set_map_world_size_override(self, map_key, world_size):
+        key = str(map_key or "").casefold()
+        if not key:
+            return
+        overrides = dict(self.map_world_size_overrides())
+        overrides[key] = float(world_size)
+        self.saved_settings["map_world_size_overrides"] = overrides
+        save_settings(self.saved_settings)
+
+    def clear_map_world_size_override(self, map_key):
+        key = str(map_key or "").casefold()
+        overrides = dict(self.map_world_size_overrides())
+        if key in overrides:
+            overrides.pop(key, None)
+            if overrides:
+                self.saved_settings["map_world_size_overrides"] = overrides
+            else:
+                self.saved_settings.pop("map_world_size_overrides", None)
+            save_settings(self.saved_settings)
+
     def map_asset_request_headers(self, accept="application/vnd.github+json"):
         headers = {"User-Agent": f"{APP_TITLE}/{APP_VERSION}"}
         if accept:
@@ -18372,6 +18498,17 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                     merged.update(info)
                     merged["local"] = True
                     maps[clean_key] = merged
+        for key, info in maps.items():
+            size = known_map_world_size(key, info)
+            if size is not None:
+                if info.get("local"):
+                    info["world_size"] = map_world_size_from_info(info, size)
+                else:
+                    info["world_size"] = size
+            override = self.map_world_size_override(key)
+            if override is not None:
+                info["world_size"] = override
+                info["world_size_override"] = True
         return maps
 
     def local_map_image_path(self, map_key, map_info):
@@ -18390,12 +18527,23 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def map_label(self, map_key, map_info):
         return str(map_info.get("label") or map_info.get("display_name") or map_key)
 
+    def map_world_size_source_label(self, map_key, map_info):
+        if map_info.get("world_size_override"):
+            return "local override"
+        if known_map_world_size(map_key, map_info) is not None:
+            return "built-in map table"
+        if map_info_has_world_size(map_info):
+            return "map metadata"
+        return "guessed fallback"
+
     def set_selected_map_key(self, map_key):
         self.selected_map_key = map_key or ""
         self.territory_map_state["map_key"] = ""
         maps = self.map_asset_definitions()
         if self.selected_map_key and self.selected_map_key in maps:
-            self.selected_map_var.set(f"Map: {self.map_label(self.selected_map_key, maps[self.selected_map_key])}")
+            info = maps[self.selected_map_key]
+            size = map_world_size_from_info(info)
+            self.selected_map_var.set(f"Map: {self.map_label(self.selected_map_key, info)} ({size:g})")
         else:
             self.selected_map_var.set("Map: not selected")
         if self.selected_map_key and self.territory_map_canvas is not None:
@@ -18592,8 +18740,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
         window = tk.Toplevel(self)
         window.title("Choose Map")
-        window.geometry("560x230")
-        window.minsize(520, 210)
+        window.geometry("640x350")
+        window.minsize(600, 320)
         window.resizable(False, False)
         window.configure(bg=GRAPHITE_BG)
         window.transient(self)
@@ -18617,11 +18765,66 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         selected_var = tk.StringVar(value=self.map_label(detected_key, maps.get(detected_key, {})) if detected_key in maps else values[0])
         combo = ttk.Combobox(frame, textvariable=selected_var, values=values, state="readonly")
         combo.grid(row=2, column=0, sticky="ew", pady=(6, 12))
+        size_var = tk.StringVar()
+        info_var = tk.StringVar()
+        warning_var = tk.StringVar()
+        original_size_by_key = {key: map_world_size_from_info(info) for key, info in maps.items()}
+
+        size_row = ttk.Frame(frame)
+        size_row.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+        size_row.columnconfigure(1, weight=1)
+        ttk.Label(size_row, text="World size", style="FieldName.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        size_entry = ttk.Entry(size_row, textvariable=size_var, width=14)
+        size_entry.grid(row=0, column=1, sticky="w")
+
+        info_label = ttk.Label(frame, textvariable=info_var, style="FieldMuted.TLabel", wraplength=600, justify="left")
+        info_label.grid(row=4, column=0, sticky="ew", pady=(0, 4))
+        warning_label = ttk.Label(frame, textvariable=warning_var, style="FieldMuted.TLabel", wraplength=600, justify="left")
+        warning_label.grid(row=5, column=0, sticky="ew", pady=(0, 12))
 
         result = {"key": ""}
 
+        def selected_key():
+            return label_to_key.get(selected_var.get(), "")
+
+        def format_size(value):
+            return f"{float(value):g}"
+
+        def refresh_selection_info():
+            key = selected_key()
+            info = maps.get(key, {})
+            size = map_world_size_from_info(info)
+            source = self.map_world_size_source_label(key, info)
+            size_var.set(format_size(size))
+            info_var.set(f"Key: {key or '-'} | World size: {format_size(size)} | Source: {source}")
+            warning_var.set("Warning: world size is guessed. Verify before plotting or editing map positions." if source == "guessed fallback" else "")
+
+        def reset_size():
+            nonlocal maps
+            key = selected_key()
+            if not key:
+                return
+            self.clear_map_world_size_override(key)
+            maps = self.map_asset_definitions()
+            original_size_by_key[key] = map_world_size_from_info(maps.get(key, {}))
+            refresh_selection_info()
+
         def use_selected():
-            result["key"] = label_to_key.get(selected_var.get(), "")
+            key = selected_key()
+            if not key:
+                return
+            try:
+                world_size = float(size_var.get().strip())
+            except ValueError:
+                messagebox.showwarning(APP_TITLE, "World size must be a number, for example 15360.", parent=window)
+                return
+            if world_size <= 0:
+                messagebox.showwarning(APP_TITLE, "World size must be higher than 0.", parent=window)
+                return
+            original_size = original_size_by_key.get(key, map_world_size_from_info(maps.get(key, {})))
+            if abs(world_size - original_size) > 0.000001:
+                self.set_map_world_size_override(key, world_size)
+            result["key"] = key
             window.destroy()
 
         def import_local():
@@ -18635,11 +18838,14 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             window.destroy()
 
         actions = ttk.Frame(frame)
-        actions.grid(row=3, column=0, sticky="e")
+        actions.grid(row=6, column=0, sticky="e")
+        self.make_button(actions, "Reset size", reset_size)
         self.make_button(actions, "Import local map", import_local, variant="add")
         self.make_button(actions, "Cancel", cancel)
         self.make_button(actions, "Continue", use_selected, primary=True)
         window.protocol("WM_DELETE_WINDOW", cancel)
+        combo.bind("<<ComboboxSelected>>", lambda _event: refresh_selection_info())
+        refresh_selection_info()
         combo.focus_set()
         window.after(20, lambda: center_window(window))
         self.wait_window(window)
@@ -18727,7 +18933,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def mission_map_size(self, positions, map_key=""):
         maps = self.map_asset_definitions()
         if map_key in maps:
-            size = float(maps[map_key].get("world_size", 15360.0))
+            size = map_world_size_from_info(maps[map_key])
             label = self.map_label(map_key, maps[map_key])
             return size, size, f"{label} map"
         root_name = ""
@@ -18737,6 +18943,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return 15360.0, 15360.0, "Chernarus coordinate map"
         if "enoch" in root_name or "livonia" in root_name:
             return 12800.0, 12800.0, "Livonia coordinate map"
+        for key, size in DEFAULT_MAP_WORLD_SIZES.items():
+            if key in root_name:
+                label = self.map_label(key, maps.get(key, {"label": key.replace("_", " ").title()}))
+                return size, size, f"{label} coordinate map"
         coords = [coord for coord in (self.spawn_position_xy(position) for position in positions) if coord is not None]
         if not coords:
             return 15360.0, 15360.0, "Coordinate map"

@@ -117,7 +117,7 @@ Basic workflow:
 
 ## Key Features
 
-- Mission loading for `db/types.xml` plus active `cfgeconomycore.xml` CE folders
+- Mission loading for `db/types.xml`, `db/events.xml`, and active `cfgeconomycore.xml` CE folders
 - Commented-out `cfgeconomycore.xml` entries ignored
 - XML syntax errors reported with line/column context without blocking the file from loading
 - Source-aware editing and dirty markers
@@ -133,7 +133,7 @@ Basic workflow:
 - Randompresets editor with cargo/attachments presets and item chance editing
 - Economy Core editor for CE managed classes, server defaults, and extra economy files
 - Type reference actions for Spawnabletypes and Randompresets
-- Events editor with child events, active/position/limit dropdowns, relationship analysis, and map plotting
+- Events editor with child events, active/position/limit dropdowns, relationship analysis, `cfgeconomycore.xml` event-source loading, and map plotting
 - Event System editor for `cfgeventspawns.xml` positions/zones and `cfgeventgroups.xml` layouts, including add/edit/delete, filtered classname/group choices, map batch placement, drag movement, rotation, and source-safe saves
 - Environment editor for `cfgenvironment.xml` file registrations, territory mappings, populations, agents, spawn classnames, and explained runtime settings
 - Territories map editor with grouped layers, box selection, Ctrl multi-select, Alt pan, move, resize, add, duplicate, delete, undo, and redo
@@ -272,9 +272,17 @@ Supported repository layout:
 maps/chernarusplus.png
 maps/livonia.png
 maps/sakhal.png
+maps/namalsk.png
+maps/<map-key>.png
 ```
 
-Users can also import a local custom map image from the `Change map` dialog. Imported maps are copied into local app data, not linked to the original file path.
+Map definitions can come from the cached manifest, built-in defaults, or local imports. Built-in world sizes are available for ChernarusPlus, ChernarusPlusGloom, Banov, Namalsk, Enoch, EnochGloom, TakistanPlus, Esseker, DeerIsle, Rostow, Iztek, Valning, Pripyat, Yiprit, Barrington, Vela, Chiemsee, Melkart, TheZone, Capare, NHChernobyl, NukeZZonE, Lux, Vis Island, Bear Island, Fogfall, Swans Island, Anastara, Alteria, Bitterroot, Sakhal, Arsteinen, Raman, NorthTakistan, GreenCounty, Hashima, Deadfall, and PNW.
+
+Manifest world-size fields accepted: `world_size`, `worldSize`, `worldsize`, `world`, and `size`.
+
+Users can also import a local custom map image from the `Change map` dialog. Imported maps are copied into local app data, not linked to the original file path. Custom maps keep the world size entered during import.
+
+`Change map` shows the selected map key, effective world size, and size source. Users can override a wrong manifest or built-in size locally; `Reset size` removes that local override. Unknown maps with guessed size are marked with a warning before plotting or editing map positions.
 
 ## CE Zones
 
@@ -362,7 +370,7 @@ Tools can also scan mission subfolders for split `types`, `spawnabletypes`, and 
 - Validation cannot prove every DayZ Central Economy behavior.
 - C/CFG profile/config files are highlighted, not fully parsed like the DayZ engine.
 - Minidump analysis is limited without private DayZ symbols.
-- Map plotting depends on available map images and correct world size metadata.
+- Map plotting depends on available map images and correct world size metadata. Built-in sizes cover many common maps; unknown custom maps still need user-supplied size.
 - CE Zones edits CE Tool XML/TGA layer masks and can import/export `areaflags.map`; test exports on copied CE projects first.
 - Mapgroupproto guided editing covers add group, add container, existing groups, containers, filters, points, comment-out for selected group/container/point, and group delete. Dispatch/proxy editing, group duplication, and point add/delete workflows are still future work.
 - Official mission creation depends on GitHub access when the official CE cache is missing or when `Update sources` is used.
