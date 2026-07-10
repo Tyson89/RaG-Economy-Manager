@@ -10562,7 +10562,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.loaded_paths = list(workspace.type_paths)
         self.saved_settings["last_dir"] = workspace.root_path
         self.reload_all()
-        self.after(100, self.prompt_for_mission_map_once)
+        remembered_map_key = self.remembered_mission_map_key(workspace.root_path)
+        if remembered_map_key and remembered_map_key in self.map_asset_definitions():
+            self.map_prompted_for_workspace = self.normalized_path(workspace.root_path)
+            self.set_selected_map_key(remembered_map_key)
+            self.auto_load_ce_zones_project()
+        else:
+            self.after(100, self.prompt_for_mission_map_once)
 
     def add_paths(self, paths):
         cleaned = []
@@ -18197,6 +18203,33 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         overrides = self.saved_settings.get("map_world_size_overrides", {})
         return overrides if isinstance(overrides, dict) else {}
 
+    def mission_map_memory(self):
+        stored = self.saved_settings.get("mission_map_keys", {})
+        return stored if isinstance(stored, dict) else {}
+
+    def mission_map_memory_key(self, root_path=None):
+        if root_path:
+            return self.normalized_path(root_path)
+        if self.mission_workspace is None:
+            return ""
+        return self.normalized_path(self.mission_workspace.root_path)
+
+    def remembered_mission_map_key(self, root_path=None):
+        key = self.mission_map_memory_key(root_path)
+        if not key:
+            return ""
+        return str(self.mission_map_memory().get(key, "") or "")
+
+    def remember_mission_map_key(self, map_key, root_path=None):
+        key = self.mission_map_memory_key(root_path)
+        value = str(map_key or "").casefold()
+        if not key or not value:
+            return
+        stored = dict(self.mission_map_memory())
+        stored[key] = value
+        self.saved_settings["mission_map_keys"] = stored
+        save_settings(self.saved_settings)
+
     def map_world_size_override(self, map_key):
         try:
             value = float(self.map_world_size_overrides().get(str(map_key or "").casefold(), 0))
@@ -18933,6 +18966,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         selected_key = self.choose_event_map_key(detected_key)
         if selected_key:
             self.set_selected_map_key(selected_key)
+            self.remember_mission_map_key(selected_key)
         self.auto_load_ce_zones_project()
 
     def change_selected_map(self):
@@ -18940,6 +18974,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         selected_key = self.choose_event_map_key(detected_key)
         if selected_key:
             self.set_selected_map_key(selected_key)
+            self.remember_mission_map_key(selected_key)
             self.auto_load_ce_zones_project(force=True)
 
     def download_map_asset(self, map_key, map_info):

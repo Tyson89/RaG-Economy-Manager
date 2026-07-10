@@ -284,6 +284,8 @@ Users can also import a local custom map image from the `Change map` dialog. Imp
 
 `Change map` shows the selected map key, effective world size, and size source. Users can override a wrong manifest or built-in size locally; `Reset size` removes that local override. Unknown maps with guessed size are marked with a warning before plotting or editing map positions.
 
+The last selected map is remembered per mission folder in local app settings. Reopening the same mission auto-selects that map without editing mission files.
+
 ## CE Zones
 
 CE Zones reads DayZ CE Tool project XML files such as:
