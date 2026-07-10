@@ -2836,6 +2836,7 @@ class EventSystemEditor(tk.Toplevel):
         map_image_path, _image_label, image_source = self.app.resolve_map_image(map_key)
         if not map_image_path and image_source:
             self.app.log(f"Map image unavailable: {image_source}", "warning")
+        map_info_text = self.app.map_info_summary(map_key)["text"]
 
         window = tk.Toplevel(self)
         window.title(f"Place Event Positions - {group.name}")
@@ -2849,7 +2850,7 @@ class EventSystemEditor(tk.Toplevel):
         outer.pack(fill="both", expand=True)
         outer.rowconfigure(1, weight=1)
         outer.columnconfigure(0, weight=1)
-        fields = ttk.LabelFrame(outer, text=map_label, padding=8)
+        fields = ttk.LabelFrame(outer, text=map_info_text, padding=8)
         fields.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         field_specs = (("World X", "x", 12), ("World Z", "z", 12), ("Y", "y", 9), ("Angle", "a", 9), ("Event group", "group", 22))
         variables = {key: tk.StringVar(value="0" if key == "a" else "") for _label, key, _width in field_specs}
@@ -14692,7 +14693,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             layer_count = len(self.visible_territory_layer_keys())
             group_label = f"{layer_count} visible layer{'s' if layer_count != 1 else ''}" if layer_count else "No visible layers"
             selected_suffix = f" | {len(selected_indices)} selected" if selected_indices else ""
-            self.territory_map_status_var.set(f"{group_label}: {len(visible_items)} plottable zone(s){selected_suffix}")
+            self.territory_map_status_var.set(f"{self.map_info_summary()['text']} | {group_label}: {len(visible_items)} plottable zone(s){selected_suffix}")
         zones = [zone for _index, zone, _coord in visible_items]
         map_width, map_height, _map_label = self.mission_map_size(zones, self.selected_map_key)
         base_w, base_h = self.territory_map_base_size()
@@ -17651,6 +17652,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         map_image_path, _image_label, image_source = self.resolve_map_image(map_key)
         if not map_image_path and image_source:
             self.log(f"Map image unavailable: {image_source}", "warning")
+        map_info_text = self.map_info_summary(map_key)["text"]
 
         window = tk.Toplevel(self)
         window.title("Territory Map Editor")
@@ -17668,7 +17670,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         group_label = self.territory_group_filter_var.get() or "All groups"
         source_label = self.territory_source_filter_var.get() or "All sources"
         filter_label = group_label if group_label != "All groups" else source_label
-        title_var = tk.StringVar(value=f"{map_label}: {len(visible_items)} visible territory zone(s) [{filter_label}]")
+        title_var = tk.StringVar(value=f"{map_info_text}: {len(visible_items)} visible territory zone(s) [{filter_label}]")
         selected_var = tk.StringVar(value="Selected: none")
         ttk.Label(outer, textvariable=title_var, style="FieldName.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
 
@@ -17945,6 +17947,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         map_image_path, _image_label, image_source = self.resolve_map_image(map_key)
         if not map_image_path and image_source:
             self.log(f"Map image unavailable: {image_source}", "warning")
+        map_info_text = self.map_info_summary(map_key)["text"]
 
         window = tk.Toplevel(self)
         window.title(f"Territory Map - {zone.name}")
@@ -17958,7 +17961,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         outer.pack(fill="both", expand=True)
         outer.rowconfigure(1, weight=1)
         outer.columnconfigure(0, weight=1)
-        ttk.Label(outer, text=f"{map_label}: {zone.name} [{self.source_display_name(zone.source_path)}]", style="FieldName.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ttk.Label(outer, text=f"{map_info_text}: {zone.name} [{self.source_display_name(zone.source_path)}]", style="FieldName.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
         canvas = tk.Canvas(outer, bg=GRAPHITE_FIELD, highlightthickness=1, highlightbackground=GRAPHITE_BORDER)
         canvas.grid(row=1, column=0, sticky="nsew")
 
@@ -18536,14 +18539,80 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return "map metadata"
         return "guessed fallback"
 
+    def map_info_summary(self, map_key=None):
+        key = (self.selected_map_key if map_key is None else map_key) or ""
+        maps = self.map_asset_definitions()
+        info = maps.get(key, {}) if key else {}
+        if not key:
+            return {
+                "selected": False,
+                "key": "",
+                "label": "Not selected",
+                "size": 0.0,
+                "source": "none",
+                "guessed": False,
+                "text": "Not selected",
+            }
+        size = map_world_size_from_info(info)
+        source = self.map_world_size_source_label(key, info)
+        label = self.map_label(key, info)
+        return {
+            "selected": True,
+            "key": key,
+            "label": label,
+            "size": size,
+            "source": source,
+            "guessed": source == "guessed fallback",
+            "text": f"{label} [{key}] | world size {size:g} | {source}",
+        }
+
+    def has_map_coordinates_loaded(self):
+        if any(self.spawn_position_xy(position) is not None for group in self.event_spawn_groups for position in group.positions):
+            return True
+        if any(self.spawn_position_xy(zone) is not None for zone in self.territory_zones):
+            return True
+        return False
+
+    def map_prompt_pending_for_workspace(self):
+        if self.mission_workspace is None:
+            return False
+        workspace_key = self.normalized_path(self.mission_workspace.root_path)
+        return self.map_prompted_for_workspace != workspace_key
+
+    def dashboard_map_issues(self):
+        issues = []
+        info = self.map_info_summary()
+        if self.map_prompt_pending_for_workspace():
+            return issues
+        if not info["selected"] and self.has_map_coordinates_loaded():
+            issues.append(
+                ValidationIssue(
+                    "warning",
+                    "",
+                    "No map selected while loaded Events or Territories contain coordinates.",
+                    "",
+                    "Choose a map so event and territory positions are plotted against the correct world size.",
+                )
+            )
+        elif info["selected"] and info["guessed"]:
+            issues.append(
+                ValidationIssue(
+                    "warning",
+                    "",
+                    f"Selected map uses guessed world size: {info['text']}.",
+                    "",
+                    "Open Change map and enter the correct world size, or import/select a map with known metadata.",
+                )
+            )
+        return issues
+
     def set_selected_map_key(self, map_key):
         self.selected_map_key = map_key or ""
         self.territory_map_state["map_key"] = ""
         maps = self.map_asset_definitions()
         if self.selected_map_key and self.selected_map_key in maps:
-            info = maps[self.selected_map_key]
-            size = map_world_size_from_info(info)
-            self.selected_map_var.set(f"Map: {self.map_label(self.selected_map_key, info)} ({size:g})")
+            info = self.map_info_summary()
+            self.selected_map_var.set(f"Map: {info['label']} ({info['size']:g})")
         else:
             self.selected_map_var.set("Map: not selected")
         if self.selected_map_key and self.territory_map_canvas is not None:
@@ -18553,6 +18622,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if self.ce_zones_canvas is not None and self.ce_zones_project is not None:
             self.invalidate_ce_zones_map(reset_view=True)
             self.draw_ce_zones_map()
+        self.refresh_dashboard()
 
     def custom_map_key_from_label(self, label):
         key = re.sub(r"[^a-z0-9]+", "_", str(label or "").casefold()).strip("_")
@@ -18989,6 +19059,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         map_image_path, image_label, image_source = self.resolve_map_image(map_key)
         if not map_image_path and image_source:
             self.log(f"Map image unavailable: {image_source}", "warning")
+        map_info_text = self.map_info_summary(map_key)["text"]
         window = tk.Toplevel(self)
         window.title(f"Location Map - {entry.name}")
         window.geometry("980x900")
@@ -19003,7 +19074,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         outer.rowconfigure(1, weight=1)
         outer.columnconfigure(0, weight=1)
         source_text = "" if map_image_path else " using coordinate grid"
-        ttk.Label(outer, text=f"{map_label}: {entry.name} ({len(coords)} location(s)){source_text}", style="FieldName.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ttk.Label(outer, text=f"{map_info_text}: {entry.name} ({len(coords)} location(s)){source_text}", style="FieldName.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
 
         canvas = tk.Canvas(outer, bg=GRAPHITE_FIELD, highlightthickness=1, highlightbackground=GRAPHITE_BORDER)
         canvas.grid(row=1, column=0, sticky="nsew")
@@ -23269,9 +23340,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def refresh_dashboard(self):
         if not self.dashboard_vars:
             return
-        errors = [issue for issue in self.issues if issue.severity == "error"]
-        warnings = [issue for issue in self.issues if issue.severity == "warning"]
-        infos = [issue for issue in self.issues if issue.severity == "info"]
+        map_issues = self.dashboard_map_issues()
+        dashboard_issues = list(self.issues) + map_issues
+        errors = [issue for issue in dashboard_issues if issue.severity == "error"]
+        warnings = [issue for issue in dashboard_issues if issue.severity == "warning"]
+        infos = [issue for issue in dashboard_issues if issue.severity == "info"]
         event_paths = self.event_source_paths()
         event_spawn_paths = self.event_spawn_source_paths()
         event_group_paths = self.event_group_source_paths()
@@ -23339,9 +23412,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         for layer_name in sorted(self.ce_zones_dirty_layers, key=str.casefold):
             add_unsaved("CE Zones", layer_name, ("ce_zone_layer", layer_name, ce_project.source_path if ce_project is not None else ""))
 
-        map_text = self.selected_map_var.get().strip()
-        if map_text.casefold().startswith("map:"):
-            map_text = map_text.split(":", 1)[1].strip()
+        map_info = self.map_info_summary()
+        map_text = map_info["text"] if map_info["selected"] else "Not selected"
         has_loaded_data = bool(self.mission_workspace is not None or self.loaded_paths or self.config_paths or self.profile_config_paths)
         if not has_loaded_data:
             validation_text = "Not available"
@@ -23355,7 +23427,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.dashboard_vars["validation"].set(validation_text)
         self.dashboard_vars["unsaved_summary"].set(f"{len(unsaved_records)} source(s)" if unsaved_records else "Clean")
 
-        issue_groups = self.issue_groups_by_module(self.issues)
+        issue_groups = self.issue_groups_by_module(dashboard_issues)
 
         def coverage_issues(module_id, paths):
             path_keys = {self.normalized_path(path) for path in paths if path}
@@ -23458,7 +23530,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             children = attention_tree.get_children()
             if children:
                 attention_tree.delete(*children)
-            ordered_issues = sorted(self.issues, key=lambda issue: ({"error": 0, "warning": 1, "info": 2}.get(issue.severity, 3), self.issue_module_sort_key(self.issue_module_id(issue)), issue.name.casefold(), issue.message.casefold()))
+            ordered_issues = sorted(dashboard_issues, key=lambda issue: ({"error": 0, "warning": 1, "info": 2}.get(issue.severity, 3), self.issue_module_sort_key(self.issue_module_id(issue)), issue.name.casefold(), issue.message.casefold()))
             visible_issues = ordered_issues[:8]
             grouped_visible = self.issue_groups_by_module(visible_issues)
             issue_index = 0
