@@ -4507,6 +4507,76 @@ def format_distribution_map(values: dict[str, int]) -> str:
     return "; ".join(f"{key}={value}" for key, value in values.items())
 
 
+def loot_item_source_bucket(row: LootItemRarityRow) -> str:
+    source_text = row.spawn_source_text
+    source_lower = source_text.casefold()
+    if "No matched source" in row.spawn_sources:
+        return "No matched source"
+    if "event child" in source_lower:
+        return "Event"
+    if "cargo" in source_lower or "attachment" in source_lower:
+        return "Cargo/Attachment"
+    if "World" in row.spawn_sources:
+        return "World"
+    if "Crafted" in row.spawn_sources:
+        return "Crafted"
+    if "Deloot" in row.spawn_sources:
+        return "Deloot"
+    return "Other"
+
+
+def loot_distribution_dead_loot_rows(report: LootDistributionReport) -> list[LootItemRarityRow]:
+    return sorted(
+        [row for row in report.item_rows if row.nominal > 0 and loot_item_source_bucket(row) == "No matched source"],
+        key=lambda item: (-item.nominal, item.class_name.casefold()),
+    )
+
+
+def loot_distribution_overloaded_rows(report: LootDistributionReport, density_threshold: float = 1.0) -> list[LootItemRarityRow]:
+    return sorted(
+        [
+            row
+            for row in report.item_rows
+            if row.nominal > 0 and row.eligible_spawn_points > 0 and row.location_density > density_threshold
+        ],
+        key=lambda item: (-item.location_density, item.class_name.casefold()),
+    )
+
+
+def loot_distribution_source_summary(report: LootDistributionReport) -> list[dict[str, object]]:
+    buckets: dict[str, dict[str, float]] = {
+        "World": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
+        "Cargo/Attachment": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
+        "Event": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
+        "Crafted": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
+        "Deloot": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
+        "No matched source": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
+    }
+    for row in report.item_rows:
+        bucket = buckets.setdefault(loot_item_source_bucket(row), {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0})
+        bucket["items"] += 1
+        bucket["nominal"] += row.nominal
+        bucket["minimum"] += row.minimum
+        bucket["findability"] += row.findability_score
+
+    result = []
+    for name, bucket in buckets.items():
+        items = int(bucket["items"])
+        if items <= 0:
+            continue
+        result.append(
+            {
+                "Source": name,
+                "Items": items,
+                "Nominal": int(bucket["nominal"]),
+                "Min": int(bucket["minimum"]),
+                "AverageFindabilityScore": bucket["findability"] / items,
+                "AverageFindabilityPercent": (bucket["findability"] / items) * 100,
+            }
+        )
+    return result
+
+
 def loot_item_row_to_dict(row: LootItemRarityRow) -> dict[str, object]:
     return {
         "ClassName": row.class_name,
@@ -4566,6 +4636,11 @@ def format_loot_distribution_json(report: LootDistributionReport) -> str:
                 "total_capacity": report.total_capacity,
                 "total_spawnpoints": report.total_spawnpoints,
                 "total_nominal": report.total_nominal,
+            },
+            "health": {
+                "source_summary": loot_distribution_source_summary(report),
+                "dead_loot": [loot_item_row_to_dict(row) for row in loot_distribution_dead_loot_rows(report)],
+                "overloaded_loot": [loot_item_row_to_dict(row) for row in loot_distribution_overloaded_rows(report)],
             },
             "items": loot_distribution_item_rows_as_dicts(report),
         },
@@ -4642,10 +4717,10 @@ def analyze_loot_distribution(
         hoarding_sensitivity = flags.get("count_in_cargo", 0) + flags.get("count_in_hoarder", 0) + flags.get("count_in_player", 0)
         hoarding_penalty = 1 + hoarding_sensitivity
         global_rarity = 1 / max(nominal, 1)
-        location_density = nominal / max(eligible_spawn_points, 1)
+        location_density = nominal / eligible_spawn_points if eligible_spawn_points > 0 else 0.0
         pool_weight = nominal * max(cost, 1)
         effective_rarity_score = global_rarity * hoarding_penalty
-        direct_world_findability = location_density / hoarding_penalty
+        direct_world_findability = location_density / hoarding_penalty if nominal > 0 and eligible_spawn_points > 0 and flags.get("crafted", 0) == 0 else 0.0
         key = entry.name.casefold()
         derived_findability = attachment_availability.get(key, 0.0) / hoarding_penalty
         item_event_findability = event_availability.get(key, 0.0) / hoarding_penalty
@@ -4761,6 +4836,18 @@ def format_loot_distribution_report(report: LootDistributionReport, limit: int =
         lines.extend(["Warnings", "--------"])
         lines.extend(f"- {warning}" for warning in report.warnings)
         lines.append("")
+
+    dead_rows = loot_distribution_dead_loot_rows(report)
+    overloaded_rows = loot_distribution_overloaded_rows(report)
+    lines.extend(["Economy health", "--------------"])
+    lines.append(f"- Dead loot rows: {len(dead_rows)}")
+    lines.append(f"- Overloaded loot rows: {len(overloaded_rows)}")
+    for bucket in loot_distribution_source_summary(report):
+        lines.append(
+            f"- {bucket['Source']}: items={bucket['Items']} | nominal={bucket['Nominal']} | min={bucket['Min']} | "
+            f"avg findability={bucket['AverageFindabilityPercent']:.4f}%"
+        )
+    lines.append("")
 
     rows = sorted(
         report.relation_summaries,

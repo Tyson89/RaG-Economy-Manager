@@ -88,6 +88,10 @@ from rag_economy_core import (
     format_cfgenvironment_xml,
     format_loot_distribution_csv,
     format_loot_distribution_json,
+    loot_distribution_dead_loot_rows,
+    loot_distribution_overloaded_rows,
+    loot_distribution_source_summary,
+    loot_item_source_bucket,
     format_event_xml,
     format_event_group_definition_xml,
     format_event_spawn_group_xml,
@@ -5103,12 +5107,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                         "tooltip": "Compare two types-style XML files and print changed entries to the activity log.",
                     },
                     {
-                        "label": "Loot distribution report",
-                        "description": "Compare loaded Types nominal demand against mapgroupproto/mapgrouppos placement capacity.",
+                        "label": "Economy health / loot balance",
+                        "description": "Find dead loot, overloaded loot, spawn-source coverage, and relation pressure from loaded economy files.",
                         "command": self.open_loot_distribution_report,
                         "primary": False,
-                        "badges": ("Mapgroup", "Read only", "Rarity"),
-                        "tooltip": "Analyze category, usage, value, and tag capacity from mapgroup files against loaded nominal values.",
+                        "badges": ("Mapgroup", "Read only", "Balance"),
+                        "tooltip": "Analyze category, usage, value, tag, world, event, cargo, crafted, and deloot coverage against loaded nominal values.",
                     },
                 ],
             ),
@@ -21601,7 +21605,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def open_loot_distribution_table_window(self, report):
         window = tk.Toplevel(self)
-        window.title("Loot Distribution / Rarity")
+        window.title("Economy Health / Loot Balance")
         window.geometry("1280x760")
         window.minsize(980, 600)
         window.configure(bg=GRAPHITE_BG)
@@ -21633,8 +21637,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         filters = ttk.LabelFrame(shell, text="Filter", padding=10)
         filters.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         filters.columnconfigure(5, weight=1)
+        filters.columnconfigure(9, weight=1)
         label_var = tk.StringVar(value="All")
         source_var = tk.StringVar(value="All")
+        category_var = tk.StringVar(value="All")
+        usage_var = tk.StringVar(value="All")
+        value_var = tk.StringVar(value="All")
+        tag_var = tk.StringVar(value="All")
         search_var = tk.StringVar(value="")
         show_details_var = tk.BooleanVar(value=False)
         ttk.Label(filters, text="Rarity", style="FieldName.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
@@ -21664,6 +21673,19 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         search.grid(row=0, column=5, sticky="ew", padx=(0, 14))
         details_check = ttk.Checkbutton(filters, text="Show detail columns", variable=show_details_var)
         details_check.grid(row=0, column=6, sticky="e")
+        relation_filter_specs = (
+            ("Category", category_var, 0),
+            ("Usage", usage_var, 2),
+            ("Value", value_var, 4),
+            ("Tag", tag_var, 6),
+        )
+        relation_combos = []
+        for label, variable, column in relation_filter_specs:
+            ttk.Label(filters, text=label, style="FieldName.TLabel").grid(row=1, column=column, sticky="w", padx=(0, 8), pady=(8, 0))
+            combo = ttk.Combobox(filters, textvariable=variable, values=("All",), state="readonly", style="TCombobox", width=18)
+            combo.grid(row=1, column=column + 1, sticky="w", padx=(0, 14), pady=(8, 0))
+            self.bind_combobox_open_on_click(combo)
+            relation_combos.append(combo)
         explanation = ttk.Label(
             filters,
             text=(
@@ -21674,12 +21696,25 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             wraplength=1220,
             justify="left",
         )
-        explanation.grid(row=1, column=0, columnspan=7, sticky="ew", pady=(8, 0))
+        explanation.grid(row=2, column=0, columnspan=10, sticky="ew", pady=(8, 0))
 
         body = ttk.Frame(shell)
         body.grid(row=2, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
+        notebook = ttk.Notebook(body)
+        notebook.grid(row=0, column=0, sticky="nsew")
+        item_tab = ttk.Frame(notebook)
+        relation_tab = ttk.Frame(notebook)
+        source_tab = ttk.Frame(notebook)
+        issue_tab = ttk.Frame(notebook)
+        for tab in (item_tab, relation_tab, source_tab, issue_tab):
+            tab.columnconfigure(0, weight=1)
+            tab.rowconfigure(0, weight=1)
+        notebook.add(item_tab, text="Items")
+        notebook.add(relation_tab, text="Relation health")
+        notebook.add(source_tab, text="Source summary")
+        notebook.add(issue_tab, text="Dead / overloaded")
 
         columns = (
             "label",
@@ -21700,7 +21735,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "density",
             "effective",
         )
-        tree = ttk.Treeview(body, columns=columns, show="tree headings", selectmode="browse", style="Economy.Treeview")
+        tree = ttk.Treeview(item_tab, columns=columns, show="tree headings", selectmode="browse", style="Economy.Treeview")
         tree.heading("#0", text="ClassName")
         headings = {
             "label": "Rarity",
@@ -21737,15 +21772,90 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         tree.column("density", width=110, anchor="e", stretch=False)
         tree.column("effective", width=110, anchor="e", stretch=False)
         tree.grid(row=0, column=0, sticky="nsew")
-        y_scroll = ttk.Scrollbar(body, command=tree.yview)
+        y_scroll = ttk.Scrollbar(item_tab, command=tree.yview)
         y_scroll.grid(row=0, column=1, sticky="ns")
-        x_scroll = ttk.Scrollbar(body, command=tree.xview, orient="horizontal")
+        x_scroll = ttk.Scrollbar(item_tab, command=tree.xview, orient="horizontal")
         x_scroll.grid(row=1, column=0, sticky="ew")
         tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
         tree.tag_configure("Unique / Extremely Rare", background="#51333a", foreground=GRAPHITE_TEXT)
         tree.tag_configure("Very Rare", background="#4a4032", foreground=GRAPHITE_TEXT)
         tree.tag_configure("Rare", background="#3f3a32", foreground=GRAPHITE_TEXT)
         tree.tag_configure("Not configured to spawn", foreground=GRAPHITE_MUTED)
+
+        relation_columns = ("status", "nominal", "capacity", "ratio", "items", "buildings", "spawnpoints")
+        relation_tree = ttk.Treeview(relation_tab, columns=relation_columns, show="tree headings", selectmode="browse", style="Economy.Treeview")
+        relation_tree.heading("#0", text="Relation")
+        for column, label in {
+            "status": "Status",
+            "nominal": "Nominal",
+            "capacity": "Capacity",
+            "ratio": "Ratio",
+            "items": "Items",
+            "buildings": "Placed objects",
+            "spawnpoints": "Spawnpoints",
+        }.items():
+            relation_tree.heading(column, text=label)
+        relation_tree.column("#0", width=260, anchor="w", stretch=True)
+        relation_tree.column("status", width=110, anchor="w", stretch=False)
+        for column in ("nominal", "capacity", "items", "buildings", "spawnpoints"):
+            relation_tree.column(column, width=105, anchor="e", stretch=False)
+        relation_tree.column("ratio", width=90, anchor="e", stretch=False)
+        relation_tree.grid(row=0, column=0, sticky="nsew")
+        relation_scroll = ttk.Scrollbar(relation_tab, command=relation_tree.yview)
+        relation_scroll.grid(row=0, column=1, sticky="ns")
+        relation_tree.configure(yscrollcommand=relation_scroll.set)
+        for tag, color in (("no capacity", GRAPHITE_ERROR), ("over target", GRAPHITE_WARNING), ("tight", GRAPHITE_WARNING), ("very loose", GRAPHITE_MUTED), ("unused", GRAPHITE_MUTED)):
+            relation_tree.tag_configure(tag, foreground=color)
+
+        source_columns = ("items", "nominal", "minimum", "avg_findability", "notes")
+        source_tree = ttk.Treeview(source_tab, columns=source_columns, show="tree headings", selectmode="browse", style="Economy.Treeview")
+        source_tree.heading("#0", text="Source")
+        for column, label in {
+            "items": "Items",
+            "nominal": "Nominal",
+            "minimum": "Min",
+            "avg_findability": "Avg findability",
+            "notes": "Notes",
+        }.items():
+            source_tree.heading(column, text=label)
+        source_tree.column("#0", width=210, anchor="w", stretch=False)
+        source_tree.column("items", width=90, anchor="e", stretch=False)
+        source_tree.column("nominal", width=100, anchor="e", stretch=False)
+        source_tree.column("minimum", width=90, anchor="e", stretch=False)
+        source_tree.column("avg_findability", width=120, anchor="e", stretch=False)
+        source_tree.column("notes", width=520, anchor="w", stretch=True)
+        source_tree.grid(row=0, column=0, sticky="nsew")
+        source_scroll = ttk.Scrollbar(source_tab, command=source_tree.yview)
+        source_scroll.grid(row=0, column=1, sticky="ns")
+        source_tree.configure(yscrollcommand=source_scroll.set)
+        source_tree.tag_configure("warning", foreground=GRAPHITE_WARNING)
+        source_tree.tag_configure("error", foreground=GRAPHITE_ERROR)
+
+        issue_columns = ("kind", "reason", "nominal", "eligible", "findability", "sources")
+        issue_tree = ttk.Treeview(issue_tab, columns=issue_columns, show="tree headings", selectmode="browse", style="Economy.Treeview")
+        issue_tree.heading("#0", text="ClassName")
+        for column, label in {
+            "kind": "Kind",
+            "reason": "Reason",
+            "nominal": "Nominal",
+            "eligible": "Matching points",
+            "findability": "Findability %",
+            "sources": "Sources",
+        }.items():
+            issue_tree.heading(column, text=label)
+        issue_tree.column("#0", width=240, anchor="w", stretch=True)
+        issue_tree.column("kind", width=115, anchor="w", stretch=False)
+        issue_tree.column("reason", width=360, anchor="w", stretch=True)
+        issue_tree.column("nominal", width=85, anchor="e", stretch=False)
+        issue_tree.column("eligible", width=120, anchor="e", stretch=False)
+        issue_tree.column("findability", width=110, anchor="e", stretch=False)
+        issue_tree.column("sources", width=220, anchor="w", stretch=False)
+        issue_tree.grid(row=0, column=0, sticky="nsew")
+        issue_scroll = ttk.Scrollbar(issue_tab, command=issue_tree.yview)
+        issue_scroll.grid(row=0, column=1, sticky="ns")
+        issue_tree.configure(yscrollcommand=issue_scroll.set)
+        issue_tree.tag_configure("dead", foreground=GRAPHITE_ERROR)
+        issue_tree.tag_configure("overloaded", foreground=GRAPHITE_WARNING)
 
         detail = ttk.LabelFrame(shell, text="Selected item", padding=10)
         detail.grid(row=3, column=0, sticky="ew", pady=(10, 0))
@@ -21764,6 +21874,89 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "Very Common": 5,
             "Not configured to spawn": 6,
         }
+
+        def relation_values(rows, attribute_name):
+            values = sorted({value for row in rows for value in getattr(row, attribute_name)}, key=str.casefold)
+            return ("All",) + tuple(values)
+
+        category_combo, usage_combo, value_combo, tag_combo = relation_combos
+        category_combo.configure(values=relation_values(item_rows, "categories"))
+        usage_combo.configure(values=relation_values(item_rows, "usages"))
+        value_combo.configure(values=relation_values(item_rows, "values"))
+        tag_combo.configure(values=relation_values(item_rows, "tags"))
+
+        def row_has_relation(row, attribute_name, selected_value):
+            return selected_value == "All" or selected_value in getattr(row, attribute_name)
+
+        def source_bucket(row):
+            return loot_item_source_bucket(row)
+
+        def refresh_health_tables():
+            relation_tree.delete(*relation_tree.get_children())
+            relation_rows = sorted(
+                report.relation_summaries,
+                key=lambda row: (
+                    row.status != "no capacity",
+                    row.status != "over target",
+                    row.status != "tight",
+                    -(row.ratio or 0),
+                    row.kind,
+                    row.name.casefold(),
+                ),
+            )
+            for index, row in enumerate(relation_rows):
+                ratio = "n/a" if row.ratio is None else f"{row.ratio:.2f}"
+                relation_tree.insert(
+                    "",
+                    "end",
+                    iid=f"relation:{index}",
+                    text=f"{row.kind}: {row.name}",
+                    values=(row.status, row.nominal, row.capacity, ratio, row.item_count, row.building_count, row.spawnpoints),
+                    tags=(row.status,),
+                )
+
+            source_tree.delete(*source_tree.get_children())
+            source_notes = {
+                "World": "Normal map loot through mapgroupproto/mapgrouppos relations.",
+                "Cargo/Attachment": "Derived from cfgspawnabletypes cargo/attachments and random presets.",
+                "Event": "Derived from enabled events.xml children and cfgeventspawns positions.",
+                "Crafted": "Marked crafted in types flags.",
+                "Deloot": "Marked deloot in types flags.",
+                "No matched source": "Configured item has no matched world, event, cargo, crafted, or deloot source.",
+            }
+            for bucket in loot_distribution_source_summary(report):
+                name = str(bucket["Source"])
+                tag = "error" if name == "No matched source" and int(bucket["Nominal"]) > 0 else "warning" if name in {"Crafted", "Deloot"} else ""
+                source_tree.insert(
+                    "",
+                    "end",
+                    text=name,
+                    values=(bucket["Items"], bucket["Nominal"], bucket["Min"], f"{float(bucket['AverageFindabilityPercent']):.4f}%", source_notes.get(name, "")),
+                    tags=(tag,),
+                )
+
+            issue_tree.delete(*issue_tree.get_children())
+            issue_index = 0
+            for row in loot_distribution_dead_loot_rows(report):
+                issue_tree.insert(
+                    "",
+                    "end",
+                    iid=f"issue:{issue_index}",
+                    text=row.class_name,
+                    values=("Dead loot", "Nominal item has no matched spawn source.", row.nominal, row.eligible_spawn_points, f"{row.findability_score * 100:.4f}%", row.spawn_source_text),
+                    tags=("dead",),
+                )
+                issue_index += 1
+            for row in loot_distribution_overloaded_rows(report):
+                issue_tree.insert(
+                    "",
+                    "end",
+                    iid=f"issue:{issue_index}",
+                    text=row.class_name,
+                    values=("Overloaded", f"Nominal is {row.location_density:.2f} per matching point.", row.nominal, row.eligible_spawn_points, f"{row.findability_score * 100:.4f}%", row.spawn_source_text),
+                    tags=("overloaded",),
+                )
+                issue_index += 1
 
         def row_sort_value(row, column):
             if column == "#0":
@@ -21813,12 +22006,16 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 if label_filter != "All" and row.estimated_rarity_label != label_filter:
                     continue
                 if source_filter != "All":
-                    source_text = row.spawn_source_text
-                    if source_filter == "Cargo/Attachment":
-                        if "cargo" not in source_text.casefold() and "attachment" not in source_text.casefold():
-                            continue
-                    elif source_filter not in source_text:
+                    if source_bucket(row) != source_filter:
                         continue
+                if not row_has_relation(row, "categories", category_var.get()):
+                    continue
+                if not row_has_relation(row, "usages", usage_var.get()):
+                    continue
+                if not row_has_relation(row, "values", value_var.get()):
+                    continue
+                if not row_has_relation(row, "tags", tag_var.get()):
+                    continue
                 if search_text and search_text not in row.class_name.casefold():
                     continue
                 rows.append(row)
@@ -21919,6 +22116,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         tree.bind("<<TreeviewSelect>>", update_detail)
         label_combo.bind("<<ComboboxSelected>>", refresh_rows, add="+")
         source_combo.bind("<<ComboboxSelected>>", refresh_rows, add="+")
+        for combo in relation_combos:
+            combo.bind("<<ComboboxSelected>>", refresh_rows, add="+")
         search.bind("<KeyRelease>", refresh_rows, add="+")
         details_check.configure(command=refresh_rows)
 
@@ -21945,6 +22144,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.make_button(actions, "Close", window.destroy, variant="primary")
 
         refresh_rows()
+        refresh_health_tables()
         window.after(20, lambda: center_window(window))
 
     def open_text_report_window(self, title, text):

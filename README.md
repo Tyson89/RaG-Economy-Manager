@@ -143,11 +143,26 @@ Basic workflow:
 - Config and Profiles editors with syntax highlighting and line numbers
 - Logs Analyzer with readable summaries for DayZ server/session files and optional deep minidump scan through Windows Debugging Tools
 - Type splitter with copy/move modes, preview, backups, and optional `cfgeconomycore.xml` activation
-- Loot distribution / rarity report estimating per-item findability from Types, mapgroups, events, spawnabletypes, randompresets, flags, and hoarding sensitivity
+- Economy health / loot balance report estimating per-item findability, dead loot, overloaded loot, spawn-source coverage, relation pressure, and rarity from Types, mapgroups, events, spawnabletypes, randompresets, flags, and hoarding sensitivity
 - Generated type skeletons from PBOs/source configs when `CfgConvert.exe` is configured
 - Official mission creator for fresh Bohemia CE templates
 - Windows installer build through PyInstaller `onedir` plus Inno Setup
 - Manual GitHub Releases update check with SHA-256 installer verification
+- Release readiness checks for version drift, required assets, `storage_1` protection, packaged files, and installer checksums
+
+## Release Checks
+
+Before building or publishing, run:
+
+```powershell
+.\check_release_ready.ps1
+```
+
+After building the installer, run:
+
+```powershell
+.\check_release_ready.ps1 -CheckArtifacts
+```
 
 ## Current Validation Rules
 
@@ -335,9 +350,9 @@ The module keeps the full XML source internally and shows a read-only selected-g
 
 The current guided editor covers group, container, relation filter, and point fields. Container names include common DayZ choices such as `lootWeapons`, `lootClothes`, `lootContainers`, `lootFloor`, and `lootTools`. Advanced dispatch/proxy editing, group duplication, and point add/delete workflows are still planned.
 
-## Loot Distribution / Rarity
+## Economy Health / Loot Balance
 
-The Tools module includes a read-only Loot Distribution / Rarity report. It estimates configured item findability from loaded Types sources and the mission files that describe where loot can actually appear:
+The Tools module includes a read-only Economy Health / Loot Balance report. It estimates configured item findability from loaded Types sources and the mission files that describe where loot can actually appear:
 
 ```text
 mapgroupproto.xml
@@ -350,7 +365,9 @@ cfgrandompresets.xml
 
 The report uses mission `db\types.xml` plus split CE files referenced by `cfgeconomycore.xml`. It does not rate rarity from `nominal` alone. It combines item economy values, category/usage/value/tag relations, mapgroup loot positions, placed object counts, event child loot, cargo/attachment sources, and hoarding flags.
 
-Each item row includes nominal/min/lifetime/restock/cost, relations, flags, eligible spawn points, location density, hoarding sensitivity, effective rarity score, findability score, rarity index, estimated rarity label, spawn sources, and usage/tier distribution. The result can be exported as CSV or JSON.
+Each item row includes nominal/min/lifetime/restock/cost, relations, flags, eligible spawn points, location density, hoarding sensitivity, effective rarity score, findability score, rarity index, estimated rarity label, spawn sources, and usage/tier distribution. Filters cover rarity, source, category, usage, value, tag, and search text.
+
+Health tabs show relation pressure, spawn-source coverage, dead loot with no matched source, and overloaded loot where nominal demand is higher than matching map opportunities. CSV export keeps the item table. JSON export also includes source summary, dead loot, and overloaded loot sections.
 
 This is not a full CE simulator. It is an estimated configured rarity/distribution report. It cannot know the exact live server state because actual spawns depend on persistence, player inventories, hoarding, cleanup, restock timing, dynamic events, and current CE state.
 
