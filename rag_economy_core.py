@@ -590,6 +590,7 @@ class LootMapGroupSummary:
     total_spawnpoints: int
     total_capacity: int
     relations: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    dispatch_proxies: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -650,6 +651,7 @@ class LootItemRarityRow:
     direct_world_findability: float = 0.0
     event_findability: float = 0.0
     attachment_availability: float = 0.0
+    dispatch_proxy_count: int = 0
 
     @property
     def category_text(self) -> str:
@@ -4361,6 +4363,11 @@ def parse_mapgroupproto_summaries(path: str | os.PathLike[str], placement_counts
             for kind, values in relation_sets.items()
             if values
         }
+        dispatch_proxies: Counter = Counter()
+        for proxy in group.findall("./dispatch/proxy"):
+            proxy_type = proxy.attrib.get("type", "").strip()
+            if proxy_type:
+                dispatch_proxies[proxy_type.casefold()] += 1
         summaries.append(
             LootMapGroupSummary(
                 name=name,
@@ -4370,6 +4377,7 @@ def parse_mapgroupproto_summaries(path: str | os.PathLike[str], placement_counts
                 total_spawnpoints=point_count * building_count,
                 total_capacity=capacity * building_count,
                 relations=relations,
+                dispatch_proxies=dict(dispatch_proxies),
             )
         )
     return tuple(sorted(summaries, key=lambda item: item.name.casefold()))
@@ -4516,6 +4524,8 @@ def loot_item_source_bucket(row: LootItemRarityRow) -> str:
         return "Event"
     if "cargo" in source_lower or "attachment" in source_lower:
         return "Cargo/Attachment"
+    if "Dispatch proxy" in row.spawn_sources:
+        return "Dispatch proxy"
     if "World" in row.spawn_sources:
         return "World"
     if "Crafted" in row.spawn_sources:
@@ -4548,6 +4558,7 @@ def loot_distribution_source_summary(report: LootDistributionReport) -> list[dic
         "World": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
         "Cargo/Attachment": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
         "Event": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
+        "Dispatch proxy": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
         "Crafted": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
         "Deloot": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
         "No matched source": {"items": 0, "nominal": 0, "minimum": 0, "findability": 0.0},
@@ -4606,6 +4617,7 @@ def loot_item_row_to_dict(row: LootItemRarityRow) -> dict[str, object]:
         "DirectWorldFindability": row.direct_world_findability,
         "EventFindability": row.event_findability,
         "AttachmentAvailability": row.attachment_availability,
+        "DispatchProxyCount": row.dispatch_proxy_count,
     }
 
 
@@ -4660,6 +4672,12 @@ def analyze_loot_distribution(
     entries = list(entries)
     placement_counts = parse_mapgrouppos_counts(mapgrouppos_path)
     group_summaries = parse_mapgroupproto_summaries(mapgroupproto_path, placement_counts)
+    dispatch_proxy_counts: Counter = Counter()
+    for group in group_summaries:
+        if group.building_count <= 0:
+            continue
+        for proxy_type, count in group.dispatch_proxies.items():
+            dispatch_proxy_counts[proxy_type] += count * group.building_count
     capacity_by_relation: dict[tuple[str, str], dict[str, int]] = {}
     for group in group_summaries:
         if group.building_count <= 0:
@@ -4689,20 +4707,27 @@ def analyze_loot_distribution(
         if nominal > 0:
             total_nominal += nominal
         relations = type_relation_values(entry)
+        has_lootdispatch = any(value.casefold() == "lootdispatch" for value in relations["category"])
+        normal_categories = tuple(value for value in relations["category"] if value.casefold() != "lootdispatch")
+        has_normal_world_category = bool(normal_categories) or not has_lootdispatch
+        normal_relations = {**relations, "category": normal_categories}
+        dispatch_proxy_count = int(dispatch_proxy_counts.get(entry.name.casefold(), 0)) if has_lootdispatch else 0
         entry_keys = []
-        for kind in RELATION_FIELDS:
-            for value in relations[kind]:
-                entry_keys.append((kind, value))
-        if nominal > 0 and not entry_keys:
+        if has_normal_world_category:
+            for kind in RELATION_FIELDS:
+                for value in normal_relations[kind]:
+                    entry_keys.append((kind, value))
+        if nominal > 0 and not entry_keys and dispatch_proxy_count <= 0:
             unmatched_items.append(f"{entry.name}: nominal {nominal}, no category/usage/value/tag")
         matching_groups = [
             group
             for group in group_summaries
-            if group.building_count > 0 and group_matches_type_relations(group, relations)
+            if has_normal_world_category and group.building_count > 0 and group_matches_type_relations(group, normal_relations)
         ]
-        eligible_spawn_points = sum(group.total_spawnpoints for group in matching_groups)
-        if eligible_spawn_points <= 0:
-            eligible_spawn_points = sum(group.total_capacity for group in matching_groups)
+        normal_spawn_points = sum(group.total_spawnpoints for group in matching_groups)
+        if normal_spawn_points <= 0:
+            normal_spawn_points = sum(group.total_capacity for group in matching_groups)
+        eligible_spawn_points = normal_spawn_points + dispatch_proxy_count
         matched_any = False
         for key in entry_keys:
             if nominal > 0:
@@ -4710,7 +4735,7 @@ def analyze_loot_distribution(
             items_by_relation[key] += 1
             if key in capacity_by_relation:
                 matched_any = True
-        if nominal > 0 and not matched_any:
+        if nominal > 0 and entry_keys and not matched_any and dispatch_proxy_count <= 0:
             rels = ", ".join(f"{kind}={value}" for kind, value in entry_keys)
             unmatched_items.append(f"{entry.name}: nominal {nominal}, no mapgroupproto capacity matched ({rels})")
         flags = type_flag_values(entry)
@@ -4720,15 +4745,18 @@ def analyze_loot_distribution(
         location_density = nominal / eligible_spawn_points if eligible_spawn_points > 0 else 0.0
         pool_weight = nominal * max(cost, 1)
         effective_rarity_score = global_rarity * hoarding_penalty
-        direct_world_findability = location_density / hoarding_penalty if nominal > 0 and eligible_spawn_points > 0 and flags.get("crafted", 0) == 0 else 0.0
+        direct_world_findability = nominal / normal_spawn_points / hoarding_penalty if nominal > 0 and normal_spawn_points > 0 and flags.get("crafted", 0) == 0 else 0.0
+        dispatch_findability = 1 / hoarding_penalty if dispatch_proxy_count > 0 else 0.0
         key = entry.name.casefold()
         derived_findability = attachment_availability.get(key, 0.0) / hoarding_penalty
         item_event_findability = event_availability.get(key, 0.0) / hoarding_penalty
-        findability_score = direct_world_findability + derived_findability + item_event_findability
+        findability_score = direct_world_findability + dispatch_findability + derived_findability + item_event_findability
         rarity_index = 1 / max(findability_score, 0.000000001)
         spawn_sources = []
-        if nominal > 0 and eligible_spawn_points > 0 and flags.get("crafted", 0) == 0:
+        if nominal > 0 and normal_spawn_points > 0 and flags.get("crafted", 0) == 0:
             spawn_sources.append("World")
+        if dispatch_proxy_count > 0:
+            spawn_sources.append("Dispatch proxy")
         if attachment_availability.get(key, 0.0) > 0:
             spawn_sources.extend(sorted(attachment_sources.get(key, ()), key=str.casefold))
         if event_availability.get(key, 0.0) > 0:
@@ -4766,6 +4794,7 @@ def analyze_loot_distribution(
                 direct_world_findability=direct_world_findability,
                 event_findability=item_event_findability,
                 attachment_availability=attachment_availability.get(key, 0.0),
+                dispatch_proxy_count=dispatch_proxy_count,
             )
         )
 
@@ -4828,6 +4857,7 @@ def format_loot_distribution_report(report: LootDistributionReport, limit: int =
         "- This is an estimated configured rarity/distribution report, not a final CE simulator.",
         "- It cannot know live persistence, player inventories, hoarding, cleanup, restock timing, dynamic events, or current CE state.",
         "- Capacity comes from mapgroupproto lootmax/spawnpoints multiplied by mapgrouppos placement counts.",
+        "- lootdispatch sources come from exact mapgroupproto dispatch proxies multiplied by matching mapgrouppos placements.",
         "- Demand comes from loaded Types nominal values plus derived cfgspawnabletypes/cfgrandompresets and events.xml child links.",
         "- Relation matching uses category, usage, value, and tag names.",
         "",

@@ -365,9 +365,11 @@ cfgrandompresets.xml
 
 The report uses mission `db\types.xml` plus split CE files referenced by `cfgeconomycore.xml`. It does not rate rarity from `nominal` alone. It combines item economy values, category/usage/value/tag relations, mapgroup loot positions, placed object counts, event child loot, cargo/attachment sources, and hoarding flags.
 
-Each item row includes nominal/min/lifetime/restock/cost, relations, flags, eligible spawn points, location density, hoarding sensitivity, effective rarity score, findability score, rarity index, estimated rarity label, spawn sources, and usage/tier distribution. Filters cover rarity, source, category, usage, value, tag, and search text.
+Each item row includes nominal/min/lifetime/restock/cost, relations, flags, eligible spawn points, location density, hoarding sensitivity, effective rarity score, findability score, rarity index, estimated rarity label, spawn sources, and usage/tier distribution. `lootdispatch` items use exact `mapgroupproto.xml` dispatch proxies multiplied by matching `mapgrouppos.xml` placements; entries with additional categories also retain normal world, spawnabletypes, and event source analysis. Filters cover rarity, source, category, usage, value, tag, and search text.
 
-Health tabs show relation pressure, spawn-source coverage, dead loot with no matched source, and overloaded loot where nominal demand is higher than matching map opportunities. CSV export keeps the item table. JSON export also includes source summary, dead loot, and overloaded loot sections.
+The report starts with green, yellow/orange, or red status cards for overall Economy Health and Loot Balance. The Action plan tab lists the concrete item rows to fix first, with suggested changes. Double-click an item or use `Open Type` to jump directly to its Types entry.
+
+Detail tabs show relation pressure, spawn-source coverage, dead loot with no matched source, and overloaded loot where nominal demand is higher than matching map opportunities. CSV export keeps the item table. JSON export also includes source summary, dead loot, and overloaded loot sections.
 
 This is not a full CE simulator. It is an estimated configured rarity/distribution report. It cannot know the exact live server state because actual spawns depend on persistence, player inventories, hoarding, cleanup, restock timing, dynamic events, and current CE state.
 

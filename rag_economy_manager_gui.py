@@ -1899,13 +1899,15 @@ class TypeSplitterDialog(tk.Toplevel):
         self.tree.heading("file", text="Output file")
         self.tree.heading("count", text="Entries")
         self.tree.heading("category", text="Group")
-        self.tree.column("file", width=360, anchor="w")
+        self.tree.column("file", width=500, anchor="w", stretch=False)
         self.tree.column("count", width=80, anchor="e", stretch=False)
         self.tree.column("category", width=220, anchor="w")
         self.tree.grid(row=0, column=0, sticky="nsew")
         y_scroll = ttk.Scrollbar(preview, command=self.tree.yview)
         y_scroll.grid(row=0, column=1, sticky="ns")
-        self.tree.configure(yscrollcommand=y_scroll.set)
+        x_scroll = ttk.Scrollbar(preview, command=self.tree.xview, orient="horizontal")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        self.tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
         summary = ttk.LabelFrame(preview, text="Write impact", padding=8)
         summary.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
         summary.columnconfigure(0, weight=1)
@@ -2426,15 +2428,17 @@ class EventSystemEditor(tk.Toplevel):
         self.spawn_tree.heading("#0", text="Event")
         for column, label, width in (("source", "Source", 150), ("positions", "Positions", 72), ("grouped", "Grouped", 72), ("zone", "Zone radius", 88)):
             self.spawn_tree.heading(column, text=label)
-            self.spawn_tree.column(column, width=width, anchor="w" if column == "source" else "e", stretch=column == "source")
-        self.spawn_tree.column("#0", width=220, stretch=True)
+            self.spawn_tree.column(column, width=260 if column == "source" else width, anchor="w" if column == "source" else "e", stretch=False)
+        self.spawn_tree.column("#0", width=280, stretch=False)
         self.spawn_tree.grid(row=0, column=0, sticky="nsew")
         self.spawn_tree.bind("<<TreeviewSelect>>", self.on_spawn_select)
         scroll = ttk.Scrollbar(left, command=self.spawn_tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
-        self.spawn_tree.configure(yscrollcommand=scroll.set)
+        x_scroll = ttk.Scrollbar(left, command=self.spawn_tree.xview, orient="horizontal")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        self.spawn_tree.configure(yscrollcommand=scroll.set, xscrollcommand=x_scroll.set)
         buttons = ttk.Frame(left)
-        buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        buttons.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.app.make_button(buttons, "Add event", self.add_spawn_event, variant="add")
         self.app.make_button(buttons, "Rename", self.rename_spawn_event)
         self.app.make_button(buttons, "Delete", self.delete_spawn_event, variant="danger")
@@ -2459,17 +2463,19 @@ class EventSystemEditor(tk.Toplevel):
         positions.columnconfigure(0, weight=1)
         columns = ("x", "z", "y", "a", "group", "type")
         self.position_tree = ttk.Treeview(positions, columns=columns, show="headings", selectmode="browse", style="Economy.Treeview")
-        widths = {"x": 110, "z": 110, "y": 80, "a": 80, "group": 230, "type": 100}
+        widths = {"x": 110, "z": 110, "y": 80, "a": 80, "group": 320, "type": 130}
         for column in columns:
             self.position_tree.heading(column, text={"a": "Angle"}.get(column, column.upper() if column in {"x", "y", "z"} else column.title()))
-            self.position_tree.column(column, width=widths[column], anchor="w", stretch=column == "group")
+            self.position_tree.column(column, width=widths[column], anchor="w", stretch=False)
         self.position_tree.grid(row=0, column=0, sticky="nsew")
         self.position_tree.bind("<Double-Button-1>", lambda _event: self.edit_position())
         scroll = ttk.Scrollbar(positions, command=self.position_tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
-        self.position_tree.configure(yscrollcommand=scroll.set)
+        x_scroll = ttk.Scrollbar(positions, command=self.position_tree.xview, orient="horizontal")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        self.position_tree.configure(yscrollcommand=scroll.set, xscrollcommand=x_scroll.set)
         buttons = ttk.Frame(positions)
-        buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        buttons.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.app.make_button(buttons, "Add position", self.add_position, variant="add")
         self.app.make_button(buttons, "Place on map", self.add_positions_from_map, variant="add")
         self.app.make_button(buttons, "Edit", self.edit_position)
@@ -2491,15 +2497,17 @@ class EventSystemEditor(tk.Toplevel):
         self.group_tree.heading("#0", text="Group")
         for column, label, width in (("source", "Source", 145), ("children", "Children", 70), ("references", "References", 80), ("radius", "Max offset", 86)):
             self.group_tree.heading(column, text=label)
-            self.group_tree.column(column, width=width, anchor="w" if column == "source" else "e", stretch=column == "source")
-        self.group_tree.column("#0", width=220, stretch=True)
+            self.group_tree.column(column, width=260 if column == "source" else width, anchor="w" if column == "source" else "e", stretch=False)
+        self.group_tree.column("#0", width=280, stretch=False)
         self.group_tree.grid(row=0, column=0, sticky="nsew")
         self.group_tree.bind("<<TreeviewSelect>>", self.on_group_select)
         scroll = ttk.Scrollbar(left, command=self.group_tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
-        self.group_tree.configure(yscrollcommand=scroll.set)
+        x_scroll = ttk.Scrollbar(left, command=self.group_tree.xview, orient="horizontal")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        self.group_tree.configure(yscrollcommand=scroll.set, xscrollcommand=x_scroll.set)
         buttons = ttk.Frame(left)
-        buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        buttons.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.app.make_button(buttons, "Add group", self.add_group, variant="add")
         self.app.make_button(buttons, "Rename", self.rename_group)
         self.app.make_button(buttons, "Delete", self.delete_group, variant="danger")
@@ -2508,18 +2516,20 @@ class EventSystemEditor(tk.Toplevel):
         right.columnconfigure(0, weight=1)
         columns = ("type", "x", "z", "y", "a", "deloot", "lootmin", "lootmax", "secondary")
         self.child_tree = ttk.Treeview(right, columns=columns, show="headings", selectmode="browse", style="Economy.Treeview")
-        widths = {"type": 230, "x": 75, "z": 75, "y": 65, "a": 65, "deloot": 65, "lootmin": 70, "lootmax": 70, "secondary": 100}
+        widths = {"type": 300, "x": 75, "z": 75, "y": 65, "a": 65, "deloot": 65, "lootmin": 70, "lootmax": 70, "secondary": 120}
         labels = {"a": "Angle", "secondary": "Spawn secondary"}
         for column in columns:
             self.child_tree.heading(column, text=labels.get(column, column.title()))
-            self.child_tree.column(column, width=widths[column], anchor="w", stretch=column == "type")
+            self.child_tree.column(column, width=widths[column], anchor="w", stretch=False)
         self.child_tree.grid(row=0, column=0, sticky="nsew")
         self.child_tree.bind("<Double-Button-1>", lambda _event: self.edit_child())
         scroll = ttk.Scrollbar(right, command=self.child_tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
-        self.child_tree.configure(yscrollcommand=scroll.set)
+        x_scroll = ttk.Scrollbar(right, command=self.child_tree.xview, orient="horizontal")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        self.child_tree.configure(yscrollcommand=scroll.set, xscrollcommand=x_scroll.set)
         buttons = ttk.Frame(right)
-        buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        buttons.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.app.make_button(buttons, "Add child", self.add_child, variant="add")
         self.app.make_button(buttons, "Edit", self.edit_child)
         self.app.make_button(buttons, "Delete", self.delete_child, variant="danger")
@@ -4948,11 +4958,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         for column, label, width in (("files", "Files", 52), ("entries", "Entries", 60), ("issues", "Issues", 82), ("state", "State", 92)):
             self.dashboard_coverage_tree.heading(column, text=label)
             self.dashboard_coverage_tree.column(column, width=width, anchor="w", stretch=column == "state")
-        self.dashboard_coverage_tree.column("#0", width=145, stretch=True)
+        self.dashboard_coverage_tree.column("#0", width=240, stretch=False)
         self.dashboard_coverage_tree.grid(row=0, column=0, sticky="nsew")
         coverage_scroll = ttk.Scrollbar(coverage, command=self.dashboard_coverage_tree.yview)
         coverage_scroll.grid(row=0, column=1, sticky="ns")
-        self.dashboard_coverage_tree.configure(yscrollcommand=coverage_scroll.set)
+        coverage_x_scroll = ttk.Scrollbar(coverage, command=self.dashboard_coverage_tree.xview, orient="horizontal")
+        coverage_x_scroll.grid(row=1, column=0, sticky="ew")
+        self.dashboard_coverage_tree.configure(yscrollcommand=coverage_scroll.set, xscrollcommand=coverage_x_scroll.set)
         self.dashboard_coverage_tree.bind("<Double-Button-1>", lambda _event: self.open_dashboard_selection())
         self.dashboard_coverage_tree.bind("<Return>", lambda _event: self.open_dashboard_selection())
         for tag, color in (("error", GRAPHITE_ERROR), ("warning", GRAPHITE_WARNING), ("dirty", GRAPHITE_INFO_HOVER), ("ready", GRAPHITE_SUCCESS), ("missing", GRAPHITE_ERROR), ("optional", GRAPHITE_MUTED)):
@@ -4968,18 +4980,20 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.dashboard_attention_tree.heading("summary", text="Issue")
         self.dashboard_attention_tree.column("#0", width=135, stretch=False)
         self.dashboard_attention_tree.column("severity", width=68, stretch=False)
-        self.dashboard_attention_tree.column("summary", width=260, stretch=True)
+        self.dashboard_attention_tree.column("summary", width=520, stretch=False)
         self.dashboard_attention_tree.grid(row=0, column=0, sticky="nsew")
         attention_scroll = ttk.Scrollbar(attention, command=self.dashboard_attention_tree.yview)
         attention_scroll.grid(row=0, column=1, sticky="ns")
-        self.dashboard_attention_tree.configure(yscrollcommand=attention_scroll.set)
+        attention_x_scroll = ttk.Scrollbar(attention, command=self.dashboard_attention_tree.xview, orient="horizontal")
+        attention_x_scroll.grid(row=1, column=0, sticky="ew")
+        self.dashboard_attention_tree.configure(yscrollcommand=attention_scroll.set, xscrollcommand=attention_x_scroll.set)
         self.dashboard_attention_tree.bind("<Double-Button-1>", lambda _event: self.open_dashboard_selection())
         self.dashboard_attention_tree.bind("<Return>", lambda _event: self.open_dashboard_selection())
         self.dashboard_attention_tree.tag_configure("error", foreground=GRAPHITE_ERROR)
         self.dashboard_attention_tree.tag_configure("warning", foreground=GRAPHITE_WARNING)
         self.dashboard_attention_tree.tag_configure("info", foreground=GRAPHITE_MUTED)
         attention_actions = ttk.Frame(attention, style="Card.TFrame")
-        attention_actions.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        attention_actions.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.make_button(attention_actions, "Open selected", self.open_dashboard_selection, variant="action", tooltip="Open selected issue in its module.")
         self.make_button(attention_actions, "Show all issues", self.open_dashboard_all_issues, tooltip="Open complete issue list outside Dashboard.")
 
@@ -4990,11 +5004,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.dashboard_unsaved_tree.heading("module", text="Module")
         self.dashboard_unsaved_tree.heading("source", text="Source")
         self.dashboard_unsaved_tree.column("module", width=125, stretch=False)
-        self.dashboard_unsaved_tree.column("source", width=520, stretch=True)
+        self.dashboard_unsaved_tree.column("source", width=800, stretch=False)
         self.dashboard_unsaved_tree.grid(row=0, column=0, sticky="ew")
         unsaved_scroll = ttk.Scrollbar(unsaved, command=self.dashboard_unsaved_tree.yview)
         unsaved_scroll.grid(row=0, column=1, sticky="ns")
-        self.dashboard_unsaved_tree.configure(yscrollcommand=unsaved_scroll.set)
+        unsaved_x_scroll = ttk.Scrollbar(unsaved, command=self.dashboard_unsaved_tree.xview, orient="horizontal")
+        unsaved_x_scroll.grid(row=1, column=0, sticky="ew")
+        self.dashboard_unsaved_tree.configure(yscrollcommand=unsaved_scroll.set, xscrollcommand=unsaved_x_scroll.set)
         self.dashboard_unsaved_tree.bind("<Double-Button-1>", lambda _event: self.open_dashboard_selection())
         self.dashboard_unsaved_tree.bind("<Return>", lambda _event: self.open_dashboard_selection())
         self.refresh_dashboard()
@@ -5721,12 +5737,17 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.spawnable_block_tree.heading("items", text="Items")
         self.spawnable_block_tree.column("kind", width=95, anchor="w", stretch=False)
         self.spawnable_block_tree.column("chance", width=70, anchor="e", stretch=False)
-        self.spawnable_block_tree.column("preset", width=170, anchor="w")
-        self.spawnable_block_tree.column("items", width=220, anchor="w")
+        self.spawnable_block_tree.column("preset", width=260, anchor="w", stretch=False)
+        self.spawnable_block_tree.column("items", width=480, anchor="w", stretch=False)
         self.spawnable_block_tree.grid(row=0, column=0, sticky="ew")
         self.spawnable_block_tree.bind("<<TreeviewSelect>>", self.on_spawnable_block_select)
+        block_y_scroll = ttk.Scrollbar(block_frame, command=self.spawnable_block_tree.yview)
+        block_y_scroll.grid(row=0, column=1, sticky="ns")
+        block_x_scroll = ttk.Scrollbar(block_frame, command=self.spawnable_block_tree.xview, orient="horizontal")
+        block_x_scroll.grid(row=1, column=0, sticky="ew")
+        self.spawnable_block_tree.configure(yscrollcommand=block_y_scroll.set, xscrollcommand=block_x_scroll.set)
         block_buttons = ttk.Frame(block_frame, style="Card.TFrame")
-        block_buttons.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        block_buttons.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.make_button(block_buttons, "Add cargo", lambda: self.add_spawnable_block("cargo"), variant="add")
         self.make_button(block_buttons, "Add attachments", lambda: self.add_spawnable_block("attachments"), variant="add")
         self.make_button(block_buttons, "Edit block", self.edit_selected_spawnable_block)
@@ -5834,11 +5855,16 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.random_preset_item_tree = ttk.Treeview(item_frame, columns=("chance",), show="tree headings", height=6, selectmode="extended", style="Economy.Treeview")
         self.random_preset_item_tree.heading("#0", text="Item")
         self.random_preset_item_tree.heading("chance", text="Chance")
-        self.random_preset_item_tree.column("#0", width=260, anchor="w")
+        self.random_preset_item_tree.column("#0", width=420, anchor="w", stretch=False)
         self.random_preset_item_tree.column("chance", width=80, anchor="e", stretch=False)
         self.random_preset_item_tree.grid(row=0, column=0, sticky="ew")
+        item_y_scroll = ttk.Scrollbar(item_frame, command=self.random_preset_item_tree.yview)
+        item_y_scroll.grid(row=0, column=1, sticky="ns")
+        item_x_scroll = ttk.Scrollbar(item_frame, command=self.random_preset_item_tree.xview, orient="horizontal")
+        item_x_scroll.grid(row=1, column=0, sticky="ew")
+        self.random_preset_item_tree.configure(yscrollcommand=item_y_scroll.set, xscrollcommand=item_x_scroll.set)
         item_buttons = ttk.Frame(item_frame, style="Card.TFrame")
-        item_buttons.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        item_buttons.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.make_button(item_buttons, "Add item", self.add_random_preset_item, variant="add")
         self.make_button(item_buttons, "Edit item", self.edit_selected_random_preset_item)
         self.make_button(item_buttons, "Delete item", self.delete_selected_random_preset_items, variant="danger")
@@ -6101,14 +6127,16 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.event_child_tree = ttk.Treeview(child_frame, columns=("attrs",), show="tree headings", height=4, selectmode="extended", style="Economy.Treeview")
         self.event_child_tree.heading("#0", text="Child classname")
         self.event_child_tree.heading("attrs", text="Attributes")
-        self.event_child_tree.column("#0", width=190, anchor="w", stretch=True)
-        self.event_child_tree.column("attrs", width=260, anchor="w", stretch=True)
+        self.event_child_tree.column("#0", width=260, anchor="w", stretch=False)
+        self.event_child_tree.column("attrs", width=500, anchor="w", stretch=False)
         self.event_child_tree.grid(row=0, column=0, sticky="ew")
         child_scroll = ttk.Scrollbar(child_frame, command=self.event_child_tree.yview)
         child_scroll.grid(row=0, column=1, sticky="ns")
-        self.event_child_tree.configure(yscrollcommand=child_scroll.set)
+        child_x_scroll = ttk.Scrollbar(child_frame, command=self.event_child_tree.xview, orient="horizontal")
+        child_x_scroll.grid(row=1, column=0, sticky="ew")
+        self.event_child_tree.configure(yscrollcommand=child_scroll.set, xscrollcommand=child_x_scroll.set)
         child_actions = ttk.Frame(child_frame, style="Card.TFrame")
-        child_actions.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        child_actions.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.make_button(child_actions, "Add child", self.add_event_child, variant="add", tooltip="Add an entity classname controlled or spawned by this event.")
         self.make_button(child_actions, "Remove selected", self.remove_selected_event_children, variant="danger", tooltip="Remove selected child entity definitions from this event.")
 
@@ -6175,7 +6203,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         detail.grid(row=0, column=1, sticky="nsew")
         detail.columnconfigure(0, weight=1)
         detail.rowconfigure(2, weight=1)
-        detail.rowconfigure(5, weight=1)
+        detail.rowconfigure(6, weight=1)
         ttk.Label(detail, textvariable=self.environment_element_var, style="FieldName.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(detail, textvariable=self.environment_explanation_var, style="FieldMuted.TLabel", wraplength=480, justify="left").grid(row=1, column=0, sticky="ew", pady=(4, 8))
 
@@ -6184,13 +6212,18 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.environment_attribute_tree.heading("value", text="Value")
         self.environment_attribute_tree.heading("meaning", text="Meaning")
         self.environment_attribute_tree.column("#0", width=110, minwidth=80, stretch=False)
-        self.environment_attribute_tree.column("value", width=170, minwidth=100, stretch=True)
-        self.environment_attribute_tree.column("meaning", width=280, minwidth=160, stretch=True)
+        self.environment_attribute_tree.column("value", width=240, minwidth=100, stretch=False)
+        self.environment_attribute_tree.column("meaning", width=420, minwidth=160, stretch=True)
         self.environment_attribute_tree.grid(row=2, column=0, sticky="nsew")
         self.environment_attribute_tree.bind("<<TreeviewSelect>>", self.on_environment_attribute_select)
+        attribute_y_scroll = ttk.Scrollbar(detail, command=self.environment_attribute_tree.yview)
+        attribute_y_scroll.grid(row=2, column=1, sticky="ns")
+        attribute_x_scroll = ttk.Scrollbar(detail, command=self.environment_attribute_tree.xview, orient="horizontal")
+        attribute_x_scroll.grid(row=3, column=0, sticky="ew")
+        self.environment_attribute_tree.configure(yscrollcommand=attribute_y_scroll.set, xscrollcommand=attribute_x_scroll.set)
 
         attribute_editor = ttk.Frame(detail, style="Card.TFrame")
-        attribute_editor.grid(row=3, column=0, sticky="ew", pady=(8, 6))
+        attribute_editor.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 6))
         attribute_editor.columnconfigure(1, weight=1)
         ttk.Label(attribute_editor, text="Name", style="FieldName.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Entry(attribute_editor, textvariable=self.environment_attribute_name_var, width=16).grid(row=0, column=1, sticky="ew", padx=(0, 8))
@@ -6201,10 +6234,14 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.make_button(attribute_actions, "Apply", self.apply_environment_attribute, variant="save", tooltip="Add or update this attribute on the selected entry.")
         self.make_button(attribute_actions, "Remove", self.remove_environment_attribute, variant="danger", tooltip="Remove the selected attribute.")
 
-        ttk.Label(detail, text="Selected XML", style="FieldName.TLabel").grid(row=4, column=0, sticky="w", pady=(4, 4))
+        ttk.Label(detail, text="Selected XML", style="FieldName.TLabel").grid(row=5, column=0, sticky="w", pady=(4, 4))
         self.environment_preview_text = tk.Text(detail, height=8, wrap="none", bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, font=("Consolas", 9))
-        self.environment_preview_text.grid(row=5, column=0, sticky="nsew")
-        self.environment_preview_text.configure(state="disabled")
+        self.environment_preview_text.grid(row=6, column=0, sticky="nsew")
+        preview_y_scroll = ttk.Scrollbar(detail, command=self.environment_preview_text.yview)
+        preview_y_scroll.grid(row=6, column=1, sticky="ns")
+        preview_x_scroll = ttk.Scrollbar(detail, command=self.environment_preview_text.xview, orient="horizontal")
+        preview_x_scroll.grid(row=7, column=0, sticky="ew")
+        self.environment_preview_text.configure(yscrollcommand=preview_y_scroll.set, xscrollcommand=preview_x_scroll.set, state="disabled")
 
         self.refresh_environment_view()
 
@@ -6931,7 +6968,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.territory_group_tree.heading("#0", text="Group / zone")
         self.territory_group_tree.heading("visible", text="Visible")
         self.territory_group_tree.heading("count", text="Zones")
-        self.territory_group_tree.column("#0", width=260, minwidth=180, stretch=True)
+        self.territory_group_tree.column("#0", width=340, minwidth=180, stretch=False)
         self.territory_group_tree.column("visible", width=64, minwidth=54, stretch=False, anchor="center")
         self.territory_group_tree.column("count", width=62, minwidth=52, stretch=False, anchor="center")
         self.territory_group_tree.tag_configure("group-current", background="#6a3a3d", foreground="#ffffff")
@@ -6947,7 +6984,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.territory_group_tree.bind("<ButtonRelease-1>", self.on_territory_group_tree_release, add="+")
         layer_scrollbar = ttk.Scrollbar(layer_scroll_shell, command=self.territory_group_tree.yview)
         layer_scrollbar.grid(row=0, column=1, sticky="ns")
-        self.territory_group_tree.configure(yscrollcommand=layer_scrollbar.set)
+        layer_x_scrollbar = ttk.Scrollbar(layer_scroll_shell, command=self.territory_group_tree.xview, orient="horizontal")
+        layer_x_scrollbar.grid(row=1, column=0, sticky="ew")
+        self.territory_group_tree.configure(yscrollcommand=layer_scrollbar.set, xscrollcommand=layer_x_scrollbar.set)
 
         self.refresh_territory_table()
 
@@ -7008,7 +7047,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.ce_zones_layer_tree.heading("#0", text="Layer")
         self.ce_zones_layer_tree.heading("state", text="Shown")
         self.ce_zones_layer_tree.heading("flags", text="Flags")
-        self.ce_zones_layer_tree.column("#0", width=230, minwidth=180, stretch=True)
+        self.ce_zones_layer_tree.column("#0", width=320, minwidth=180, stretch=False)
         self.ce_zones_layer_tree.column("state", width=70, minwidth=60, stretch=False, anchor="center")
         self.ce_zones_layer_tree.column("flags", width=90, minwidth=70, stretch=False, anchor="e")
         self.ce_zones_layer_tree.tag_configure("ce-visible", background="#4b3437", foreground="#ffffff")
@@ -7017,10 +7056,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.ce_zones_layer_tree.bind("<ButtonRelease-1>", self.on_ce_zones_layer_click)
         layer_scroll = ttk.Scrollbar(left, command=self.ce_zones_layer_tree.yview)
         layer_scroll.grid(row=3, column=1, sticky="ns")
-        self.ce_zones_layer_tree.configure(yscrollcommand=layer_scroll.set)
+        layer_x_scroll = ttk.Scrollbar(left, command=self.ce_zones_layer_tree.xview, orient="horizontal")
+        layer_x_scroll.grid(row=4, column=0, sticky="ew")
+        self.ce_zones_layer_tree.configure(yscrollcommand=layer_scroll.set, xscrollcommand=layer_x_scroll.set)
 
         detail = ttk.LabelFrame(left, text="Selected layer", padding=10)
-        detail.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        detail.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         detail.columnconfigure(0, weight=1)
         self.ce_zones_detail_text = tk.Text(detail, height=7, wrap="word", bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Consolas", 9))
         self.ce_zones_detail_text.grid(row=0, column=0, sticky="ew")
@@ -8949,16 +8990,18 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         for column, label, width, stretch in (
             ("severity", "Severity", 80, False),
             ("module", "Module", 115, False),
-            ("item", "Item", 180, False),
-            ("issue", "Issue", 500, True),
-            ("source", "Source", 210, True),
+            ("item", "Item", 240, False),
+            ("issue", "Issue", 720, False),
+            ("source", "Source", 420, False),
         ):
             tree.heading(column, text=label)
             tree.column(column, width=width, anchor="w", stretch=stretch)
         tree.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(shell, command=tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
-        tree.configure(yscrollcommand=scroll.set)
+        x_scroll = ttk.Scrollbar(shell, command=tree.xview, orient="horizontal")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        tree.configure(yscrollcommand=scroll.set, xscrollcommand=x_scroll.set)
         tree.tag_configure("error", foreground=GRAPHITE_ERROR)
         tree.tag_configure("warning", foreground=GRAPHITE_WARNING)
         tree.tag_configure("info", foreground=GRAPHITE_MUTED)
@@ -8980,7 +9023,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         tree.bind("<Double-Button-1>", lambda _event: open_selected())
         tree.bind("<Return>", lambda _event: open_selected())
         actions = ttk.Frame(shell)
-        actions.grid(row=1, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        actions.grid(row=2, column=0, columnspan=2, sticky="e", pady=(10, 0))
         self.make_button(actions, "Open selected", open_selected, variant="action")
         self.make_button(actions, "Close", window.destroy)
         window.after(20, lambda: center_window(window, self))
@@ -9148,11 +9191,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             listbox.grid(row=0, column=0, sticky="nsew")
             scrollbar = ttk.Scrollbar(frame, command=listbox.yview)
             scrollbar.grid(row=0, column=1, sticky="ns")
-            listbox.configure(yscrollcommand=scrollbar.set)
+            x_scrollbar = ttk.Scrollbar(frame, command=listbox.xview, orient="horizontal")
+            x_scrollbar.grid(row=1, column=0, sticky="ew")
+            listbox.configure(yscrollcommand=scrollbar.set, xscrollcommand=x_scrollbar.set)
             self.definition_listboxes[kind] = listbox
 
             buttons = ttk.Frame(frame, style="Card.TFrame")
-            buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+            buttons.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
             self.make_button(buttons, "Add", lambda relation_kind=kind: self.add_definition_value(relation_kind), variant="add", tooltip=f"Add a {kind} definition.")
             self.make_button(buttons, "Rename", lambda relation_kind=kind: self.rename_definition_value(relation_kind), tooltip=f"Rename the selected {kind} definition.")
             self.make_button(buttons, "Delete", lambda relation_kind=kind: self.delete_definition_value(relation_kind), variant="danger", tooltip=f"Delete the selected {kind} definition.")
@@ -9209,14 +9254,16 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.economycore_root_tree.heading("#0", text="Class root")
         self.economycore_root_tree.heading("act", text="Behavior")
         self.economycore_root_tree.heading("report", text="Memory LOD")
-        self.economycore_root_tree.column("#0", width=260, anchor="w", stretch=True)
+        self.economycore_root_tree.column("#0", width=380, anchor="w", stretch=False)
         self.economycore_root_tree.column("act", width=120, anchor="w", stretch=False)
         self.economycore_root_tree.column("report", width=140, anchor="w", stretch=False)
         self.economycore_root_tree.grid(row=0, column=0, sticky="nsew")
         self.economycore_root_tree.bind("<<TreeviewSelect>>", self.on_economycore_root_select)
         scroll = ttk.Scrollbar(table_frame, command=self.economycore_root_tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
-        self.economycore_root_tree.configure(yscrollcommand=scroll.set)
+        x_scroll = ttk.Scrollbar(table_frame, command=self.economycore_root_tree.xview, orient="horizontal")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        self.economycore_root_tree.configure(yscrollcommand=scroll.set, xscrollcommand=x_scroll.set)
 
         editor = ttk.LabelFrame(parent, text="Selected managed class", padding=10)
         editor.grid(row=0, column=1, sticky="nsew")
@@ -17585,15 +17632,17 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         tree.heading("active", text="Active")
         tree.heading("locations", text="Locations")
         tree.heading("workflow", text="Workflow")
-        tree.column("#0", width=210, stretch=True)
-        tree.column("source", width=150, stretch=True)
+        tree.column("#0", width=260, stretch=False)
+        tree.column("source", width=280, stretch=False)
         tree.column("active", width=70, anchor="center", stretch=False)
         tree.column("locations", width=80, anchor="e", stretch=False)
-        tree.column("workflow", width=150, stretch=True)
+        tree.column("workflow", width=240, stretch=False)
         tree.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(table_frame, command=tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
-        tree.configure(yscrollcommand=scroll.set)
+        x_scroll = ttk.Scrollbar(table_frame, command=tree.xview, orient="horizontal")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        tree.configure(yscrollcommand=scroll.set, xscrollcommand=x_scroll.set)
 
         indexed_events = []
         for event in sorted(related_events, key=lambda item: (item.name.casefold(), self.source_display_name(item.source_path).casefold())):
@@ -20490,8 +20539,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         for column, label, width in (
             ("module", "Module", 130),
             ("relation", "Relation", 170),
-            ("entry", "Entry", 260),
-            ("source", "Source", 260),
+            ("entry", "Entry", 320),
+            ("source", "Source", 420),
         ):
             tree.heading(column, text=label)
             tree.column(column, width=width, anchor="w")
@@ -20500,7 +20549,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         frame.columnconfigure(0, weight=1)
         scrollbar = ttk.Scrollbar(frame, command=tree.yview)
         scrollbar.grid(row=1, column=1, sticky="ns")
-        tree.configure(yscrollcommand=scrollbar.set)
+        x_scrollbar = ttk.Scrollbar(frame, command=tree.xview, orient="horizontal")
+        x_scrollbar.grid(row=2, column=0, sticky="ew")
+        tree.configure(yscrollcommand=scrollbar.set, xscrollcommand=x_scrollbar.set)
         callbacks = {}
         for index, (module, relation, target_name, source_path, callback) in enumerate(references):
             iid = f"ref-{index}"
@@ -20521,7 +20572,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
         tree.bind("<Double-Button-1>", lambda _event: open_selected())
         actions = ttk.Frame(frame)
-        actions.grid(row=2, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        actions.grid(row=3, column=0, columnspan=2, sticky="e", pady=(10, 0))
         self.make_button(actions, "Close", window.destroy)
         self.make_button(actions, "Open selected", open_selected, variant="action")
         window.geometry("900x430")
@@ -21611,6 +21662,31 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         window.configure(bg=GRAPHITE_BG)
         window.transient(self)
         apply_app_icon(window)
+        item_rows = list(report.item_rows)
+        dead_rows = loot_distribution_dead_loot_rows(report)
+        overloaded_rows = loot_distribution_overloaded_rows(report)
+        no_capacity_relations = [row for row in report.relation_summaries if row.status == "no capacity" and row.nominal > 0]
+        over_target_relations = [row for row in report.relation_summaries if row.status == "over target"]
+        tight_relations = [row for row in report.relation_summaries if row.status == "tight"]
+        action_count = len(dead_rows) + len(overloaded_rows)
+        if dead_rows or no_capacity_relations:
+            overall_state, overall_color = "Red", GRAPHITE_ERROR_DARK
+            overall_note = "Spawn blockers found"
+        elif overloaded_rows or over_target_relations or tight_relations or report.warnings:
+            overall_state, overall_color = "Orange", GRAPHITE_WARNING
+            overall_note = "Review balance pressure"
+        else:
+            overall_state, overall_color = "Green", GRAPHITE_SUCCESS_DARK
+            overall_note = "No major blockers"
+        if overloaded_rows or over_target_relations:
+            balance_state, balance_color = "Orange", GRAPHITE_WARNING
+            balance_note = "Nominal pressure high"
+        elif tight_relations:
+            balance_state, balance_color = "Yellow", GRAPHITE_WARNING
+            balance_note = "Some relations tight"
+        else:
+            balance_state, balance_color = "Green", GRAPHITE_SUCCESS_DARK
+            balance_note = "Demand fits capacity"
 
         shell = ttk.Frame(window, padding=12)
         shell.pack(fill="both", expand=True)
@@ -21622,17 +21698,20 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         for column in range(5):
             header.columnconfigure(column, weight=1)
         summary_items = (
-            ("Nominal demand", report.total_nominal),
-            ("Map capacity", report.total_capacity),
-            ("Items", len(report.item_rows)),
-            ("Unmatched", len(report.unmatched_items)),
-            ("Placed groups", f"{report.placed_group_count}/{report.map_group_count}"),
+            ("Overall Economy Health", overall_state, overall_note, overall_color),
+            ("Loot Balance", balance_state, balance_note, balance_color),
+            ("Change first", action_count, "red/orange action rows", GRAPHITE_CARD_SOFT),
+            ("Dead loot", len(dead_rows), "nominal with no source", GRAPHITE_CARD_SOFT),
+            ("Overloaded", len(overloaded_rows), "nominal > matching points", GRAPHITE_CARD_SOFT),
         )
-        for column, (label, value) in enumerate(summary_items):
-            box = tk.Frame(header, bg=GRAPHITE_CARD_SOFT, padx=12, pady=8)
+        for column, (label, value, note, color) in enumerate(summary_items):
+            text_fg = "#1f2126" if color == GRAPHITE_WARNING else GRAPHITE_TEXT
+            muted_fg = "#2f3238" if color == GRAPHITE_WARNING else GRAPHITE_MUTED
+            box = tk.Frame(header, bg=color, padx=12, pady=8)
             box.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 8, 0))
-            tk.Label(box, text=label, bg=GRAPHITE_CARD_SOFT, fg=GRAPHITE_MUTED, font=("Segoe UI", 9)).pack(anchor="w")
-            tk.Label(box, text=str(value), bg=GRAPHITE_CARD_SOFT, fg=GRAPHITE_TEXT, font=("Segoe UI", 14, "bold")).pack(anchor="w", pady=(2, 0))
+            tk.Label(box, text=label, bg=color, fg=muted_fg, font=("Segoe UI", 9)).pack(anchor="w")
+            tk.Label(box, text=str(value), bg=color, fg=text_fg, font=("Segoe UI", 14, "bold")).pack(anchor="w", pady=(2, 0))
+            tk.Label(box, text=str(note), bg=color, fg=muted_fg, font=("Segoe UI", 8), wraplength=180, justify="left").pack(anchor="w", pady=(2, 0))
 
         filters = ttk.LabelFrame(shell, text="Filter", padding=10)
         filters.grid(row=1, column=0, sticky="ew", pady=(0, 10))
@@ -21661,7 +21740,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         source_combo = ttk.Combobox(
             filters,
             textvariable=source_var,
-            values=("All", "World", "Cargo/Attachment", "Event", "Crafted", "Deloot", "No matched source"),
+            values=("All", "World", "Dispatch proxy", "Cargo/Attachment", "Event", "Crafted", "Deloot", "No matched source"),
             state="readonly",
             style="TCombobox",
             width=18,
@@ -21689,8 +21768,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         explanation = ttk.Label(
             filters,
             text=(
-                "Findability % is an estimated configured share: nominal divided by matching map opportunities, adjusted for hoarding flags and derived event/cargo sources. "
-                "Rarity view shows the same score as '1 per N matching opportunities'. Matching points are configured map loot positions, not guaranteed live server spawns."
+                "Start with Action plan. Red = fix first, orange/yellow = review balance, green = OK. "
+                "Items is the detailed table for filtering and export."
             ),
             style="FieldMuted.TLabel",
             wraplength=1220,
@@ -21704,17 +21783,17 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         body.rowconfigure(0, weight=1)
         notebook = ttk.Notebook(body)
         notebook.grid(row=0, column=0, sticky="nsew")
+        action_tab = ttk.Frame(notebook)
         item_tab = ttk.Frame(notebook)
         relation_tab = ttk.Frame(notebook)
         source_tab = ttk.Frame(notebook)
-        issue_tab = ttk.Frame(notebook)
-        for tab in (item_tab, relation_tab, source_tab, issue_tab):
+        for tab in (action_tab, item_tab, relation_tab, source_tab):
             tab.columnconfigure(0, weight=1)
             tab.rowconfigure(0, weight=1)
+        notebook.add(action_tab, text="Action plan")
         notebook.add(item_tab, text="Items")
-        notebook.add(relation_tab, text="Relation health")
-        notebook.add(source_tab, text="Source summary")
-        notebook.add(issue_tab, text="Dead / overloaded")
+        notebook.add(relation_tab, text="Relations")
+        notebook.add(source_tab, text="Sources")
 
         columns = (
             "label",
@@ -21795,7 +21874,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "spawnpoints": "Spawnpoints",
         }.items():
             relation_tree.heading(column, text=label)
-        relation_tree.column("#0", width=260, anchor="w", stretch=True)
+        relation_tree.column("#0", width=380, anchor="w", stretch=False)
         relation_tree.column("status", width=110, anchor="w", stretch=False)
         for column in ("nominal", "capacity", "items", "buildings", "spawnpoints"):
             relation_tree.column(column, width=105, anchor="e", stretch=False)
@@ -21803,7 +21882,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         relation_tree.grid(row=0, column=0, sticky="nsew")
         relation_scroll = ttk.Scrollbar(relation_tab, command=relation_tree.yview)
         relation_scroll.grid(row=0, column=1, sticky="ns")
-        relation_tree.configure(yscrollcommand=relation_scroll.set)
+        relation_x_scroll = ttk.Scrollbar(relation_tab, command=relation_tree.xview, orient="horizontal")
+        relation_x_scroll.grid(row=1, column=0, sticky="ew")
+        relation_tree.configure(yscrollcommand=relation_scroll.set, xscrollcommand=relation_x_scroll.set)
         for tag, color in (("no capacity", GRAPHITE_ERROR), ("over target", GRAPHITE_WARNING), ("tight", GRAPHITE_WARNING), ("very loose", GRAPHITE_MUTED), ("unused", GRAPHITE_MUTED)):
             relation_tree.tag_configure(tag, foreground=color)
 
@@ -21823,39 +21904,45 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         source_tree.column("nominal", width=100, anchor="e", stretch=False)
         source_tree.column("minimum", width=90, anchor="e", stretch=False)
         source_tree.column("avg_findability", width=120, anchor="e", stretch=False)
-        source_tree.column("notes", width=520, anchor="w", stretch=True)
+        source_tree.column("notes", width=720, anchor="w", stretch=False)
         source_tree.grid(row=0, column=0, sticky="nsew")
         source_scroll = ttk.Scrollbar(source_tab, command=source_tree.yview)
         source_scroll.grid(row=0, column=1, sticky="ns")
-        source_tree.configure(yscrollcommand=source_scroll.set)
+        source_x_scroll = ttk.Scrollbar(source_tab, command=source_tree.xview, orient="horizontal")
+        source_x_scroll.grid(row=1, column=0, sticky="ew")
+        source_tree.configure(yscrollcommand=source_scroll.set, xscrollcommand=source_x_scroll.set)
         source_tree.tag_configure("warning", foreground=GRAPHITE_WARNING)
         source_tree.tag_configure("error", foreground=GRAPHITE_ERROR)
+        source_tree.tag_configure("ok", foreground=GRAPHITE_SUCCESS)
 
-        issue_columns = ("kind", "reason", "nominal", "eligible", "findability", "sources")
-        issue_tree = ttk.Treeview(issue_tab, columns=issue_columns, show="tree headings", selectmode="browse", style="Economy.Treeview")
+        issue_columns = ("status", "problem", "change", "nominal", "eligible", "sources")
+        issue_tree = ttk.Treeview(action_tab, columns=issue_columns, show="tree headings", selectmode="browse", style="Economy.Treeview")
         issue_tree.heading("#0", text="ClassName")
         for column, label in {
-            "kind": "Kind",
-            "reason": "Reason",
+            "status": "Status",
+            "problem": "Problem",
+            "change": "Suggested change",
             "nominal": "Nominal",
             "eligible": "Matching points",
-            "findability": "Findability %",
             "sources": "Sources",
         }.items():
             issue_tree.heading(column, text=label)
         issue_tree.column("#0", width=240, anchor="w", stretch=True)
-        issue_tree.column("kind", width=115, anchor="w", stretch=False)
-        issue_tree.column("reason", width=360, anchor="w", stretch=True)
+        issue_tree.column("status", width=90, anchor="w", stretch=False)
+        issue_tree.column("problem", width=360, anchor="w", stretch=False)
+        issue_tree.column("change", width=560, anchor="w", stretch=False)
         issue_tree.column("nominal", width=85, anchor="e", stretch=False)
         issue_tree.column("eligible", width=120, anchor="e", stretch=False)
-        issue_tree.column("findability", width=110, anchor="e", stretch=False)
-        issue_tree.column("sources", width=220, anchor="w", stretch=False)
+        issue_tree.column("sources", width=360, anchor="w", stretch=False)
         issue_tree.grid(row=0, column=0, sticky="nsew")
-        issue_scroll = ttk.Scrollbar(issue_tab, command=issue_tree.yview)
+        issue_scroll = ttk.Scrollbar(action_tab, command=issue_tree.yview)
         issue_scroll.grid(row=0, column=1, sticky="ns")
-        issue_tree.configure(yscrollcommand=issue_scroll.set)
+        issue_x_scroll = ttk.Scrollbar(action_tab, command=issue_tree.xview, orient="horizontal")
+        issue_x_scroll.grid(row=1, column=0, sticky="ew")
+        issue_tree.configure(yscrollcommand=issue_scroll.set, xscrollcommand=issue_x_scroll.set)
         issue_tree.tag_configure("dead", foreground=GRAPHITE_ERROR)
         issue_tree.tag_configure("overloaded", foreground=GRAPHITE_WARNING)
+        issue_tree.tag_configure("ok", foreground=GRAPHITE_SUCCESS)
 
         detail = ttk.LabelFrame(shell, text="Selected item", padding=10)
         detail.grid(row=3, column=0, sticky="ew", pady=(10, 0))
@@ -21863,7 +21950,6 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         detail_var = tk.StringVar(value="Select an item to see why it is rated that way.")
         ttk.Label(detail, textvariable=detail_var, style="FieldMuted.TLabel", wraplength=980, justify="left").grid(row=0, column=0, sticky="w")
 
-        item_rows = list(report.item_rows)
         sort_state = {"column": "rarity_view", "reverse": True}
         label_weight = {
             "Unique / Extremely Rare": 0,
@@ -21918,6 +22004,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             source_tree.delete(*source_tree.get_children())
             source_notes = {
                 "World": "Normal map loot through mapgroupproto/mapgrouppos relations.",
+                "Dispatch proxy": "Exact mapgroupproto dispatch proxies multiplied by matching mapgrouppos placements.",
                 "Cargo/Attachment": "Derived from cfgspawnabletypes cargo/attachments and random presets.",
                 "Event": "Derived from enabled events.xml children and cfgeventspawns positions.",
                 "Crafted": "Marked crafted in types flags.",
@@ -21926,7 +22013,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             }
             for bucket in loot_distribution_source_summary(report):
                 name = str(bucket["Source"])
-                tag = "error" if name == "No matched source" and int(bucket["Nominal"]) > 0 else "warning" if name in {"Crafted", "Deloot"} else ""
+                tag = "error" if name == "No matched source" and int(bucket["Nominal"]) > 0 else "warning" if name in {"Crafted", "Deloot"} else "ok"
                 source_tree.insert(
                     "",
                     "end",
@@ -21937,26 +22024,49 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
             issue_tree.delete(*issue_tree.get_children())
             issue_index = 0
-            for row in loot_distribution_dead_loot_rows(report):
+            for row in dead_rows:
                 issue_tree.insert(
                     "",
                     "end",
-                    iid=f"issue:{issue_index}",
+                    iid=f"issue:{issue_index}:{row.class_name}",
                     text=row.class_name,
-                    values=("Dead loot", "Nominal item has no matched spawn source.", row.nominal, row.eligible_spawn_points, f"{row.findability_score * 100:.4f}%", row.spawn_source_text),
+                    values=(
+                        "Red",
+                        "Nominal item has no matched spawn source.",
+                        "Add a valid world/event/cargo source, fix relations, or set nominal to 0.",
+                        row.nominal,
+                        row.eligible_spawn_points,
+                        row.spawn_source_text,
+                    ),
                     tags=("dead",),
                 )
                 issue_index += 1
-            for row in loot_distribution_overloaded_rows(report):
+            for row in overloaded_rows:
                 issue_tree.insert(
                     "",
                     "end",
-                    iid=f"issue:{issue_index}",
+                    iid=f"issue:{issue_index}:{row.class_name}",
                     text=row.class_name,
-                    values=("Overloaded", f"Nominal is {row.location_density:.2f} per matching point.", row.nominal, row.eligible_spawn_points, f"{row.findability_score * 100:.4f}%", row.spawn_source_text),
+                    values=(
+                        "Orange",
+                        f"Nominal is {row.location_density:.2f} per matching point.",
+                        "Lower nominal/restock pressure or add more matching map opportunities.",
+                        row.nominal,
+                        row.eligible_spawn_points,
+                        row.spawn_source_text,
+                    ),
                     tags=("overloaded",),
                 )
                 issue_index += 1
+            if issue_index <= 0:
+                issue_tree.insert(
+                    "",
+                    "end",
+                    iid="issue:ok",
+                    text="No critical item changes",
+                    values=("Green", "No dead or overloaded item rows found.", "Use Items tab only for fine tuning.", "", "", ""),
+                    tags=("ok",),
+                )
 
         def row_sort_value(row, column):
             if column == "#0":
@@ -22100,6 +22210,28 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                     return row
             return None
 
+        def selected_action_type_name():
+            selection = issue_tree.selection()
+            if not selection:
+                return ""
+            iid = selection[0]
+            if iid == "issue:ok":
+                return ""
+            return str(issue_tree.item(iid, "text") or "").strip()
+
+        def open_selected_type_entry():
+            if notebook.select() == str(action_tab):
+                class_name = selected_action_type_name()
+            else:
+                row = selected_row()
+                class_name = row.class_name if row is not None else selected_action_type_name()
+            if not class_name:
+                messagebox.showwarning(APP_TITLE, "Select a loot item first.", parent=window)
+                return
+            if self.select_type_entry_by_name(class_name):
+                return
+            messagebox.showwarning(APP_TITLE, f"Could not find loaded Types entry:\n{class_name}", parent=window)
+
         def update_detail(_event=None):
             row = selected_row()
             if row is None:
@@ -22114,6 +22246,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             )
 
         tree.bind("<<TreeviewSelect>>", update_detail)
+        tree.bind("<Double-Button-1>", lambda _event: open_selected_type_entry())
+        tree.bind("<Return>", lambda _event: open_selected_type_entry())
+        issue_tree.bind("<Double-Button-1>", lambda _event: open_selected_type_entry())
+        issue_tree.bind("<Return>", lambda _event: open_selected_type_entry())
         label_combo.bind("<<ComboboxSelected>>", refresh_rows, add="+")
         source_combo.bind("<<ComboboxSelected>>", refresh_rows, add="+")
         for combo in relation_combos:
@@ -22138,9 +22274,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
         actions = ttk.Frame(shell, style="Card.TFrame")
         actions.grid(row=4, column=0, sticky="e", pady=(10, 0))
+        self.make_button(actions, "Open Type", open_selected_type_entry, variant="action")
         self.make_button(actions, "Export CSV", lambda: save_text_file("Export Loot Distribution CSV", ".csv", lambda: format_loot_distribution_csv(report)), variant="report")
         self.make_button(actions, "Export JSON", lambda: save_text_file("Export Loot Distribution JSON", ".json", lambda: format_loot_distribution_json(report)), variant="report")
-        self.make_button(actions, "Full report", lambda: self.open_text_report_window("Loot Distribution / Rarity Report", format_loot_distribution_report(report)), variant="report")
+        self.make_button(actions, "Full report", lambda: self.open_text_report_window("Economy Health / Loot Balance Report", format_loot_distribution_report(report)), variant="report")
         self.make_button(actions, "Close", window.destroy, variant="primary")
 
         refresh_rows()
