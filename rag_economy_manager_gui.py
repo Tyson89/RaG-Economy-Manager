@@ -1035,6 +1035,25 @@ def save_settings(data: dict) -> None:
         pass
 
 
+def configure_windows_dpi_awareness():
+    if os.name != "nt":
+        return
+    try:
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
 def resource_path(relative_path: str) -> str:
     base_path = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
     return os.path.join(base_path, relative_path)
@@ -1091,6 +1110,16 @@ def is_safe_window_geometry(value):
         return int(parts[0]) >= 1000 and int(parts[1]) >= 700
     except ValueError:
         return False
+
+
+def widget_size_changed(state, event, key="configure_size"):
+    if event is None:
+        return True
+    size = (int(event.width), int(event.height))
+    if state.get(key) == size:
+        return False
+    state[key] = size
+    return True
 
 
 def parse_sort_int(value):
@@ -3212,7 +3241,14 @@ class EventSystemEditor(tk.Toplevel):
             if (pending or edited_positions) and self.apply_position_changes(group, pending, edited_positions, window):
                 window.destroy()
 
-        canvas.bind("<Configure>", lambda _event: (fit_map(), draw_map()) if not state["fitted"] else draw_map())
+        def on_canvas_configure(event):
+            if not widget_size_changed(state, event):
+                return
+            if not state["fitted"]:
+                fit_map()
+            draw_map()
+
+        canvas.bind("<Configure>", on_canvas_configure)
         canvas.bind("<MouseWheel>", on_mousewheel)
         canvas.bind("<ButtonPress-1>", place)
         canvas.bind("<B1-Motion>", pan)
@@ -3385,6 +3421,7 @@ class EventSystemEditor(tk.Toplevel):
 
 class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def __init__(self):
+        configure_windows_dpi_awareness()
         configure_windows_taskbar_icon()
         super().__init__()
         self.saved_settings = load_settings()
@@ -3681,6 +3718,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.config_search_after_id = None
         self.validation_refresh_after_id = None
         self.window_geometry_after_id = None
+        self.window_last_size = None
         self.selected_source_path: str | None = None
         self.dirty_source_keys_cache: set[str] = set()
         self.config_paths: list[str] = []
@@ -8143,6 +8181,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def on_ce_zones_map_configure(self, event=None):
         if self.active_module != "ce_zones":
+            return
+        if not widget_size_changed(self.ce_zones_map_state, event):
             return
         if self.ce_zones_map_state.get("zoom", 0.0) <= 0:
             self.draw_ce_zones_map()
@@ -14941,6 +14981,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if self.active_module != "territories":
             return
         state = self.territory_map_state
+        if not widget_size_changed(state, event):
+            return
         if state["zoom"] == 1.0 and state["offset_x"] == 0.0 and state["offset_y"] == 0.0:
             self.fit_territory_map()
         self.schedule_territory_map_draw(fast=True)
@@ -17966,6 +18008,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             state["pan_active"] = False
 
         def on_configure(event=None):
+            if not widget_size_changed(state, event):
+                return
             if state["zoom"] == 1.0 and state["offset_x"] == 0.0 and state["offset_y"] == 0.0:
                 fit_map()
             draw_map()
@@ -18082,7 +18126,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.draw_map_marker(canvas, px, py, self.territory_zone_icon_key(zone), GRAPHITE_ACCENT_HOVER, active=True, display_radius=scaled_radius if zone_radius > 0 else 0.0)
             canvas.create_text(px + 8, py - 8, text=zone.name, fill=GRAPHITE_TEXT, anchor="sw", font=("Segoe UI", 9, "bold"))
 
-        canvas.bind("<Configure>", draw)
+        def on_canvas_configure(event):
+            if widget_size_changed(state, event):
+                draw()
+
+        canvas.bind("<Configure>", on_canvas_configure)
         actions = ttk.Frame(outer)
         actions.grid(row=2, column=0, sticky="e", pady=(10, 0))
         self.make_button(actions, "Close", window.destroy, primary=True)
@@ -19348,6 +19396,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             state["pan_active"] = False
 
         def on_configure(event=None):
+            if not widget_size_changed(state, event):
+                return
             if state["zoom"] == 1.0 and state["offset_x"] == 0.0 and state["offset_y"] == 0.0:
                 fit_map()
             draw_map()
@@ -21665,16 +21715,29 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         item_rows = list(report.item_rows)
         dead_rows = loot_distribution_dead_loot_rows(report)
         overloaded_rows = loot_distribution_overloaded_rows(report)
+        usage_paint_names = set()
+        if self.ce_zones_project is not None:
+            for layer in self.ce_zones_project.layers:
+                if layer.kind != "usage_paint":
+                    continue
+                kind, value = self.ce_zone_layer_relation(layer)
+                if kind == "usage" and value:
+                    usage_paint_names.add(value.casefold())
+        usage_paint_rows = [row for row in dead_rows if usage_paint_names.intersection(value.casefold() for value in row.usages)]
+        usage_paint_row_names = {row.class_name.casefold() for row in usage_paint_rows}
+        blocked_dead_rows = [row for row in dead_rows if row.class_name.casefold() not in usage_paint_row_names]
         no_capacity_relations = [row for row in report.relation_summaries if row.status == "no capacity" and row.nominal > 0]
+        usage_paint_relations = [row for row in no_capacity_relations if row.kind == "usage" and row.name.casefold() in usage_paint_names]
+        blocked_no_capacity_relations = [row for row in no_capacity_relations if row not in usage_paint_relations]
         over_target_relations = [row for row in report.relation_summaries if row.status == "over target"]
         tight_relations = [row for row in report.relation_summaries if row.status == "tight"]
         action_count = len(dead_rows) + len(overloaded_rows)
-        if dead_rows or no_capacity_relations:
+        if blocked_dead_rows or blocked_no_capacity_relations:
             overall_state, overall_color = "Red", GRAPHITE_ERROR_DARK
             overall_note = "Spawn blockers found"
-        elif overloaded_rows or over_target_relations or tight_relations or report.warnings:
+        elif usage_paint_rows or usage_paint_relations or overloaded_rows or over_target_relations or tight_relations or report.warnings:
             overall_state, overall_color = "Orange", GRAPHITE_WARNING
-            overall_note = "Review balance pressure"
+            overall_note = "Review balance / usage paint"
         else:
             overall_state, overall_color = "Green", GRAPHITE_SUCCESS_DARK
             overall_note = "No major blockers"
@@ -21701,7 +21764,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             ("Overall Economy Health", overall_state, overall_note, overall_color),
             ("Loot Balance", balance_state, balance_note, balance_color),
             ("Change first", action_count, "red/orange action rows", GRAPHITE_CARD_SOFT),
-            ("Dead loot", len(dead_rows), "nominal with no source", GRAPHITE_CARD_SOFT),
+            ("No-source rows", len(dead_rows), "verify usage paint first", GRAPHITE_CARD_SOFT),
             ("Overloaded", len(overloaded_rows), "nominal > matching points", GRAPHITE_CARD_SOFT),
         )
         for column, (label, value, note, color) in enumerate(summary_items):
@@ -21769,7 +21832,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             filters,
             text=(
                 "Start with Action plan. Red = fix first, orange/yellow = review balance, green = OK. "
-                "Items is the detailed table for filtering and export."
+                "Important: areaflags.map usage paint overrides mapgroupproto building usage. A no-source result means no source in this relation estimate; "
+                "check CE Zones usage paint before changing nominal, especially usages such as Historical or Lunapark."
             ),
             style="FieldMuted.TLabel",
             wraplength=1220,
@@ -21837,7 +21901,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         }
         for column, label in headings.items():
             tree.heading(column, text=label)
-        tree.column("#0", width=250, anchor="w", stretch=True)
+        tree.column("#0", width=250, anchor="w", stretch=False)
         tree.column("label", width=150, anchor="w", stretch=False)
         tree.column("findability", width=115, anchor="e", stretch=False)
         tree.column("rarity_view", width=140, anchor="e", stretch=False)
@@ -21887,6 +21951,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         relation_tree.configure(yscrollcommand=relation_scroll.set, xscrollcommand=relation_x_scroll.set)
         for tag, color in (("no capacity", GRAPHITE_ERROR), ("over target", GRAPHITE_WARNING), ("tight", GRAPHITE_WARNING), ("very loose", GRAPHITE_MUTED), ("unused", GRAPHITE_MUTED)):
             relation_tree.tag_configure(tag, foreground=color)
+        relation_tree.tag_configure("usage paint", foreground=GRAPHITE_WARNING)
 
         source_columns = ("items", "nominal", "minimum", "avg_findability", "notes")
         source_tree = ttk.Treeview(source_tab, columns=source_columns, show="tree headings", selectmode="browse", style="Economy.Treeview")
@@ -21927,7 +21992,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             "sources": "Sources",
         }.items():
             issue_tree.heading(column, text=label)
-        issue_tree.column("#0", width=240, anchor="w", stretch=True)
+        issue_tree.column("#0", width=240, anchor="w", stretch=False)
         issue_tree.column("status", width=90, anchor="w", stretch=False)
         issue_tree.column("problem", width=360, anchor="w", stretch=False)
         issue_tree.column("change", width=560, anchor="w", stretch=False)
@@ -21941,6 +22006,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         issue_x_scroll.grid(row=1, column=0, sticky="ew")
         issue_tree.configure(yscrollcommand=issue_scroll.set, xscrollcommand=issue_x_scroll.set)
         issue_tree.tag_configure("dead", foreground=GRAPHITE_ERROR)
+        issue_tree.tag_configure("painted", foreground=GRAPHITE_WARNING)
         issue_tree.tag_configure("overloaded", foreground=GRAPHITE_WARNING)
         issue_tree.tag_configure("ok", foreground=GRAPHITE_SUCCESS)
 
@@ -21992,13 +22058,15 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             )
             for index, row in enumerate(relation_rows):
                 ratio = "n/a" if row.ratio is None else f"{row.ratio:.2f}"
+                row_tag = "usage paint" if row.kind == "usage" and row.name.casefold() in usage_paint_names and row.status == "no capacity" else row.status
+                display_status = "usage paint check" if row_tag == "usage paint" else row.status
                 relation_tree.insert(
                     "",
                     "end",
                     iid=f"relation:{index}",
                     text=f"{row.kind}: {row.name}",
-                    values=(row.status, row.nominal, row.capacity, ratio, row.item_count, row.building_count, row.spawnpoints),
-                    tags=(row.status,),
+                    values=(display_status, row.nominal, row.capacity, ratio, row.item_count, row.building_count, row.spawnpoints),
+                    tags=(row_tag,),
                 )
 
             source_tree.delete(*source_tree.get_children())
@@ -22009,11 +22077,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 "Event": "Derived from enabled events.xml children and cfgeventspawns positions.",
                 "Crafted": "Marked crafted in types flags.",
                 "Deloot": "Marked deloot in types flags.",
-                "No matched source": "Configured item has no matched world, event, cargo, crafted, or deloot source.",
+                "No matched source": "No source matched this estimate. areaflags.map usage paint can still provide valid spawn areas by overriding building usage.",
             }
             for bucket in loot_distribution_source_summary(report):
                 name = str(bucket["Source"])
-                tag = "error" if name == "No matched source" and int(bucket["Nominal"]) > 0 else "warning" if name in {"Crafted", "Deloot"} else "ok"
+                tag = "error" if name == "No matched source" and int(bucket["Nominal"]) > 0 and blocked_dead_rows else "warning" if name in {"Crafted", "Deloot", "No matched source"} else "ok"
                 source_tree.insert(
                     "",
                     "end",
@@ -22025,20 +22093,22 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             issue_tree.delete(*issue_tree.get_children())
             issue_index = 0
             for row in dead_rows:
+                painted_usages = sorted({value for value in row.usages if value.casefold() in usage_paint_names}, key=str.casefold)
+                usage_paint_candidate = bool(painted_usages)
                 issue_tree.insert(
                     "",
                     "end",
                     iid=f"issue:{issue_index}:{row.class_name}",
                     text=row.class_name,
                     values=(
-                        "Red",
-                        "Nominal item has no matched spawn source.",
-                        "Add a valid world/event/cargo source, fix relations, or set nominal to 0.",
+                        "Yellow" if usage_paint_candidate else "Red",
+                        f"No mapgroup source matched; loaded usage paint may provide {', '.join(painted_usages)} areas." if usage_paint_candidate else "No spawn source matched this estimate.",
+                        "Inspect matching CE Zones usage-paint layer before changing nominal." if usage_paint_candidate else "Check areaflags.map usage paint first; then add/fix a source or set nominal to 0.",
                         row.nominal,
                         row.eligible_spawn_points,
                         row.spawn_source_text,
                     ),
-                    tags=("dead",),
+                    tags=("painted" if usage_paint_candidate else "dead",),
                 )
                 issue_index += 1
             for row in overloaded_rows:
@@ -24249,9 +24319,15 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         window.after(20, lambda: center_window(window, self))
 
     def on_window_configure(self, event=None):
-        if event is None or event.widget is not self or self.window_geometry_after_id is not None:
+        if event is None or event.widget is not self:
             return
-        self.window_geometry_after_id = self.after(250, self.capture_window_geometry)
+        size = (int(event.width), int(event.height))
+        if size == self.window_last_size:
+            return
+        self.window_last_size = size
+        if self.window_geometry_after_id is not None:
+            self.after_cancel(self.window_geometry_after_id)
+        self.window_geometry_after_id = self.after(500, self.capture_window_geometry)
 
     def capture_window_geometry(self):
         self.window_geometry_after_id = None

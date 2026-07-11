@@ -369,7 +369,9 @@ Each item row includes nominal/min/lifetime/restock/cost, relations, flags, elig
 
 The report starts with green, yellow/orange, or red status cards for overall Economy Health and Loot Balance. The Action plan tab lists the concrete item rows to fix first, with suggested changes. Double-click an item or use `Open Type` to jump directly to its Types entry.
 
-Detail tabs show relation pressure, spawn-source coverage, dead loot with no matched source, and overloaded loot where nominal demand is higher than matching map opportunities. CSV export keeps the item table. JSON export also includes source summary, dead loot, and overloaded loot sections.
+`areaflags.map` usage paint can override the usage assigned to buildings in `mapgroupproto.xml`. A no-source result therefore means no source was found by the relation estimate, not proof that the item cannot spawn. Check painted usages such as `Historical` or `Lunapark` in CE Zones before changing nominal values. When a loaded CE project contains a matching usage-paint layer, the Action plan marks that row yellow for verification instead of treating it as a definite red blocker.
+
+Detail tabs show relation pressure, spawn-source coverage, no-source candidates, and overloaded loot where nominal demand is higher than matching map opportunities. CSV export keeps the item table. JSON export also includes source summary, no-source, and overloaded loot sections.
 
 This is not a full CE simulator. It is an estimated configured rarity/distribution report. It cannot know the exact live server state because actual spawns depend on persistence, player inventories, hoarding, cleanup, restock timing, dynamic events, and current CE state.
 

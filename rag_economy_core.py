@@ -4639,7 +4639,7 @@ def format_loot_distribution_csv(report: LootDistributionReport) -> str:
 def format_loot_distribution_json(report: LootDistributionReport) -> str:
     return json.dumps(
         {
-            "limitation": "Estimated configured rarity/distribution from mission files. It cannot know live persistence, player inventories, hoarding, cleanup, restock timing, dynamic events, or current CE state.",
+            "limitation": "Estimated configured rarity/distribution from mission files. Spatial areaflags.map usage paint can override mapgroupproto building usage and is not included in relation capacity. The report also cannot know live persistence, player inventories, hoarding, cleanup, restock timing, dynamic events, or current CE state.",
             "mapgroupproto": report.mapgroupproto_path,
             "mapgrouppos": report.mapgrouppos_path,
             "summary": {
@@ -4860,6 +4860,7 @@ def format_loot_distribution_report(report: LootDistributionReport, limit: int =
         "- lootdispatch sources come from exact mapgroupproto dispatch proxies multiplied by matching mapgrouppos placements.",
         "- Demand comes from loaded Types nominal values plus derived cfgspawnabletypes/cfgrandompresets and events.xml child links.",
         "- Relation matching uses category, usage, value, and tag names.",
+        "- Spatial areaflags.map usage paint can override mapgroupproto building usage. Verify painted usages such as Historical or Lunapark before treating a no-source row as dead loot.",
         "",
     ]
     if report.warnings:
@@ -4870,7 +4871,7 @@ def format_loot_distribution_report(report: LootDistributionReport, limit: int =
     dead_rows = loot_distribution_dead_loot_rows(report)
     overloaded_rows = loot_distribution_overloaded_rows(report)
     lines.extend(["Economy health", "--------------"])
-    lines.append(f"- Dead loot rows: {len(dead_rows)}")
+    lines.append(f"- No-source rows (verify usage paint): {len(dead_rows)}")
     lines.append(f"- Overloaded loot rows: {len(overloaded_rows)}")
     for bucket in loot_distribution_source_summary(report):
         lines.append(
@@ -4932,7 +4933,7 @@ def format_loot_distribution_report(report: LootDistributionReport, limit: int =
 
     lines.extend(["Next useful checks", "------------------"])
     lines.append("- Check over-target relations first; these categories/usages likely have too much nominal demand for available map slots.")
-    lines.append("- Check no-capacity relations; those items may never find valid map placement unless events/spawnabletypes handle them elsewhere.")
+    lines.append("- Check no-capacity relations, then verify areaflags.map usage paint before treating them as invalid; painted usage overrides building usage.")
     lines.append("- Use this report before rarity scaling so balancing is based on actual map support.")
     return "\n".join(lines)
 
