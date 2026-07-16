@@ -3465,6 +3465,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.workspace_validation_stale = True
         self.tool_search_var = tk.StringVar(value="")
         self.tool_rows = []
+        self.tools_canvas = None
+        self.tool_activity_text = None
+        self.tool_activity_messages: list[tuple[str, str, str]] = []
+        self.tool_activity_refresh_after_id = None
         self.log_analyzer_paths: list[str] = []
         self.log_analyzer_roots: list[str] = []
         self.log_analyzer_iids = {}
@@ -3751,14 +3755,18 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.mapgroupproto_issue_text = None
         self.mapgroupproto_xml_text = None
         self.mapgroupproto_status_var = tk.StringVar(value="Open a mission folder to inspect mapgroupproto.xml.")
+        self.mapgroupproto_selected_target_var = tk.StringVar(value="Selected target: none")
         self.mapgroupproto_selected_index: int | None = None
         self.mapgroupproto_selected_container_index: int | None = None
         self.mapgroupproto_selected_point_index: tuple[int, int] | None = None
+        self.mapgroupproto_selected_kind: str | None = None
+        self.mapgroupproto_syncing_selection = False
         self.mapgroupproto_group_iids: dict[str, str] = {}
         self.mapgroupproto_issue_line_targets: dict[int, str] = {}
         self.mapgroupproto_reloading = False
         self.mapgroupproto_parsed_text = ""
         self.mapgroupproto_comment_button = None
+        self.mapgroupproto_delete_button = None
         self.profile_config_path_var = tk.StringVar(value="No profiles folder attached")
         self.profile_config_status_var = tk.StringVar(value="Add a profiles folder to browse server profile configs.")
         self.profile_config_search_var = tk.StringVar(value="")
@@ -5074,11 +5082,34 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.refresh_table()
 
     def build_tools_module(self):
-        page = ttk.Frame(self.module_content)
-        page.grid(row=0, column=0, sticky="nsew")
+        host = ttk.Frame(self.module_content)
+        host.grid(row=0, column=0, sticky="nsew")
+        host.columnconfigure(0, weight=1)
+        host.rowconfigure(0, weight=1)
+        self.module_pages["tools"] = host
+
+        canvas = tk.Canvas(host, bg=GRAPHITE_BG, highlightthickness=0, borderwidth=0)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        page_scroll = ttk.Scrollbar(host, command=canvas.yview)
+        page_scroll.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=page_scroll.set)
+        self.tools_canvas = canvas
+
+        page = ttk.Frame(canvas)
+        page_id = canvas.create_window((0, 0), window=page, anchor="nw")
         page.columnconfigure(0, weight=1)
         page.rowconfigure(3, weight=1)
-        self.module_pages["tools"] = page
+
+        def refresh_scroll_region(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def fit_content_width(event=None):
+            if event is not None:
+                canvas.itemconfigure(page_id, width=max(1, event.width))
+
+        page.bind("<Configure>", refresh_scroll_region)
+        canvas.bind("<Configure>", fit_content_width)
+        self.bind_all("<MouseWheel>", self.on_tools_mousewheel, add="+")
 
         header = ttk.LabelFrame(page, text="Toolbox", padding=14)
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -5154,11 +5185,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                     },
                     {
                         "label": "Compare old/new",
-                        "description": "Compare two types-style XML files and print changed classnames to the activity log.",
+                        "description": "Compare two types-style XML files and list changed classnames in Tool status.",
                         "command": self.compare_files,
                         "primary": False,
                         "badges": ("Types XML", "Read only"),
-                        "tooltip": "Compare two types-style XML files and print changed entries to the activity log.",
+                        "tooltip": "Compare two types-style XML files and list changed entries in Tool status.",
                     },
                     {
                         "label": "Economy health / loot balance",
@@ -5222,14 +5253,43 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         output = ttk.LabelFrame(page, text="Tool status", padding=14)
         output.grid(row=3, column=0, sticky="nsew")
         output.columnconfigure(0, weight=1)
-        output.rowconfigure(0, weight=1)
-        ttk.Label(
+        output.rowconfigure(1, weight=1)
+        ttk.Label(output, text="Recent tool output. Tools that edit source data also update dirty markers and Dashboard.", style="FieldMuted.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self.tool_activity_text = tk.Text(
             output,
-            text="Tool output is written to the global activity log below. Tools that edit source data also update dirty markers and the Dashboard.",
-            style="FieldMuted.TLabel",
-            wraplength=920,
-            justify="left",
-        ).grid(row=0, column=0, sticky="nw")
+            height=12,
+            wrap="none",
+            bg=GRAPHITE_FIELD,
+            fg=GRAPHITE_TEXT,
+            insertbackground=GRAPHITE_TEXT,
+            selectbackground=GRAPHITE_ACCENT_DARK,
+            selectforeground="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=GRAPHITE_BORDER,
+            highlightcolor=GRAPHITE_ACCENT,
+            font=("Consolas", 9),
+        )
+        self.tool_activity_text.grid(row=1, column=0, sticky="nsew")
+        activity_y = ttk.Scrollbar(output, command=self.tool_activity_text.yview)
+        activity_y.grid(row=1, column=1, sticky="ns")
+        activity_x = ttk.Scrollbar(output, command=self.tool_activity_text.xview, orient="horizontal")
+        activity_x.grid(row=2, column=0, sticky="ew")
+        self.tool_activity_text.configure(yscrollcommand=activity_y.set, xscrollcommand=activity_x.set, state="disabled")
+        activity_actions = ttk.Frame(output, style="Card.TFrame")
+        activity_actions.grid(row=3, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        self.make_button(activity_actions, "Copy", self.copy_tool_activity_log, tooltip="Copy recent Tool status output.")
+        self.make_button(activity_actions, "Clear", self.clear_tool_activity_log, variant="danger", tooltip="Clear Tool status output.")
+        self.refresh_tool_activity_log()
+
+    def on_tools_mousewheel(self, event):
+        if self.active_module != "tools" or self.tools_canvas is None:
+            return None
+        if event.widget is self.tool_activity_text:
+            return None
+        self.tools_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
 
     def ce_registration_file_type_for_path(self, path):
         if is_ignored_storage_path(path):
@@ -7161,14 +7221,15 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         header.columnconfigure(0, weight=1)
         ttk.Label(header, textvariable=self.mapgroupproto_status_var, style="FieldMuted.TLabel", wraplength=1100, justify="left").grid(row=0, column=0, sticky="w")
+        ttk.Label(header, textvariable=self.mapgroupproto_selected_target_var, style="FieldName.TLabel", wraplength=1100, justify="left").grid(row=1, column=0, sticky="w", pady=(5, 0))
         actions = ttk.Frame(header, style="Card.TFrame")
-        actions.grid(row=0, column=1, sticky="e")
+        actions.grid(row=0, column=1, rowspan=2, sticky="e")
         self.make_info_button(actions, "mapgroupproto")
         self.make_button(actions, "Reload", self.reload_mapgroupproto, tooltip="Reload mapgroupproto.xml from disk.")
         self.make_button(actions, "Validate", self.validate_mapgroupproto_current_text, variant="action", tooltip="Validate mapgroupproto.xml and refresh checks.")
         self.make_button(actions, "Edit selected", self.open_mapgroupproto_edit_dialog, variant="action", tooltip="Edit selected group, selected container, or selected point.")
         self.mapgroupproto_comment_button = self.make_button(actions, "Comment out selected", self.toggle_selected_mapgroupproto_comment, variant="danger", tooltip="Toggle the selected group, container, or point between active XML and an XML comment.")
-        self.make_button(actions, "Delete selected", self.delete_selected_mapgroupproto_group, variant="danger", tooltip="Delete the selected prototype group from mapgroupproto.xml.")
+        self.mapgroupproto_delete_button = self.make_button(actions, "Delete selected", self.delete_selected_mapgroupproto, variant="danger", tooltip="Delete the selected group, container, or point from mapgroupproto.xml.")
         self.make_button(actions, "Save", self.save_mapgroupproto, variant="save", tooltip="Overwrite mapgroupproto.xml with current XML text.")
 
         main = ttk.PanedWindow(page, orient="horizontal")
@@ -10575,16 +10636,61 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.version_footer.place(relx=1.0, rely=1.0, anchor="se", x=-10, y=-6)
 
     def configure_log_tags(self):
-        if hasattr(self, "selected_issue_text"):
-            self.selected_issue_text.tag_configure("error", foreground=GRAPHITE_ERROR)
-            self.selected_issue_text.tag_configure("warning", foreground=GRAPHITE_WARNING)
-            self.selected_issue_text.tag_configure("info", foreground=GRAPHITE_MUTED)
-            self.selected_issue_text.tag_configure("success", foreground=GRAPHITE_SUCCESS)
-            self.selected_issue_text.tag_configure("suggestion", foreground=GRAPHITE_SUCCESS)
-            self.selected_issue_text.tag_configure("muted", foreground=GRAPHITE_MUTED)
+        for widget in (getattr(self, "selected_issue_text", None), getattr(self, "tool_activity_text", None)):
+            if widget is None:
+                continue
+            widget.tag_configure("error", foreground=GRAPHITE_ERROR)
+            widget.tag_configure("warning", foreground=GRAPHITE_WARNING)
+            widget.tag_configure("info", foreground=GRAPHITE_MUTED)
+            widget.tag_configure("success", foreground=GRAPHITE_SUCCESS)
+            widget.tag_configure("suggestion", foreground=GRAPHITE_SUCCESS)
+            widget.tag_configure("muted", foreground=GRAPHITE_MUTED)
 
     def log(self, message, tag=None):
-        pass
+        record = (datetime.now().strftime("%H:%M:%S"), str(message), str(tag or "info"))
+        self.tool_activity_messages.append(record)
+        if len(self.tool_activity_messages) > 2000:
+            del self.tool_activity_messages[:-2000]
+        if threading.current_thread() is threading.main_thread():
+            self.schedule_tool_activity_refresh()
+        else:
+            self.after(0, self.schedule_tool_activity_refresh)
+
+    def schedule_tool_activity_refresh(self):
+        if self.tool_activity_refresh_after_id is None:
+            self.tool_activity_refresh_after_id = self.after_idle(self.refresh_tool_activity_log)
+
+    def refresh_tool_activity_log(self):
+        self.tool_activity_refresh_after_id = None
+        text = getattr(self, "tool_activity_text", None)
+        if text is None:
+            return
+        text.configure(state="normal")
+        text.delete("1.0", "end")
+        valid_tags = {"error", "warning", "info", "success", "suggestion", "muted"}
+        for timestamp, message, tag in self.tool_activity_messages:
+            text.insert("end", f"[{timestamp}] {message}\n", tag if tag in valid_tags else "info")
+        text.configure(state="disabled")
+        text.see("end")
+
+    def copy_tool_activity_log(self):
+        if not self.tool_activity_messages:
+            messagebox.showinfo(APP_TITLE, "Tool status is empty.")
+            return
+        content = "\n".join(f"[{timestamp}] {message}" for timestamp, message, _tag in self.tool_activity_messages)
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        self.set_status("Tool status copied", "success")
+
+    def clear_tool_activity_log(self):
+        self.tool_activity_messages.clear()
+        self.refresh_tool_activity_log()
+        self.set_status("Tool status cleared", "ready")
+
+    def reveal_tool_activity_log(self):
+        canvas = getattr(self, "tools_canvas", None)
+        if canvas is not None:
+            self.after_idle(lambda: canvas.yview_moveto(1.0))
 
     def update_window_title(self):
         marker = " *" if getattr(self, "dirty", False) else ""
@@ -12789,6 +12895,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         for index, group in enumerate(self.mapgroupproto_groups):
             if group.name == group_name:
                 self.mapgroupproto_selected_index = index
+                self.mapgroupproto_selected_container_index = None
+                self.mapgroupproto_selected_point_index = None
+                self.mapgroupproto_selected_kind = "group"
                 self.populate_mapgroupproto_group_detail(group)
                 return True
         return False
@@ -12821,13 +12930,52 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.mapgroupproto_issue_text.configure(state="disabled")
 
     def update_mapgroupproto_comment_button(self):
-        if getattr(self, "mapgroupproto_comment_button", None) is None:
-            return
         group = self.selected_mapgroupproto_group()
         container = self.selected_mapgroupproto_container(group)
         point = self.selected_mapgroupproto_point(group)
         commented = bool(group and (getattr(group, "commented", False) or (container and getattr(container, "commented", False)) or (point and getattr(point, "commented", False))))
-        self.mapgroupproto_comment_button.configure(text="Activate selected" if commented else "Comment out selected")
+        if getattr(self, "mapgroupproto_comment_button", None) is not None:
+            self.mapgroupproto_comment_button.configure(text="Activate selected" if commented else "Comment out selected")
+        self.update_mapgroupproto_selection_display()
+
+    def update_mapgroupproto_selection_display(self):
+        group = self.selected_mapgroupproto_group()
+        kind = getattr(self, "mapgroupproto_selected_kind", None)
+        label = "Selected target: none"
+        button_text = "Delete selected"
+        if group is not None:
+            container = self.selected_mapgroupproto_container(group)
+            point = self.selected_mapgroupproto_point(group)
+            if kind == "point" and point is not None and container is not None:
+                label = f"Selected target: Point - {point.pos} ({group.name} / {container.name})"
+                button_text = "Delete point"
+            elif kind == "container" and container is not None:
+                label = f"Selected target: Container - {container.name} ({group.name})"
+                button_text = "Delete container"
+            else:
+                label = f"Selected target: Group - {group.name}"
+                button_text = "Delete group"
+        target_var = getattr(self, "mapgroupproto_selected_target_var", None)
+        if target_var is not None:
+            target_var.set(label)
+        delete_button = getattr(self, "mapgroupproto_delete_button", None)
+        if delete_button is not None:
+            delete_button.configure(text=button_text)
+
+    def show_only_mapgroupproto_target_selection(self, active_kind):
+        self.mapgroupproto_syncing_selection = True
+        trees = {
+            "group": self.mapgroupproto_group_tree,
+            "container": self.mapgroupproto_container_tree,
+            "point": self.mapgroupproto_point_tree,
+        }
+        for kind, tree in trees.items():
+            if kind == active_kind or tree is None:
+                continue
+            selected = tree.selection()
+            if selected:
+                tree.selection_remove(*selected)
+        self.after_idle(lambda: setattr(self, "mapgroupproto_syncing_selection", False))
 
     def on_mapgroupproto_issue_click(self, event):
         if self.mapgroupproto_issue_text is None:
@@ -12840,12 +12988,14 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         return "break"
 
     def on_mapgroupproto_group_select(self, event=None):
-        if self.mapgroupproto_group_tree is None:
+        if self.mapgroupproto_group_tree is None or getattr(self, "mapgroupproto_syncing_selection", False):
             return
         selected = self.mapgroupproto_group_tree.selection()
         if not selected:
+            self.mapgroupproto_selected_index = None
             self.mapgroupproto_selected_container_index = None
             self.mapgroupproto_selected_point_index = None
+            self.mapgroupproto_selected_kind = None
             self.populate_mapgroupproto_group_detail(None)
             self.update_mapgroupproto_comment_button()
             return
@@ -12855,35 +13005,44 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 self.mapgroupproto_selected_index = index
                 self.mapgroupproto_selected_container_index = None
                 self.mapgroupproto_selected_point_index = None
+                self.mapgroupproto_selected_kind = "group"
                 self.populate_mapgroupproto_group_detail(group)
+                self.show_only_mapgroupproto_target_selection("group")
                 self.update_mapgroupproto_comment_button()
                 return
 
     def on_mapgroupproto_container_select(self, event=None):
-        if self.mapgroupproto_container_tree is None:
+        if self.mapgroupproto_container_tree is None or getattr(self, "mapgroupproto_syncing_selection", False):
             return
         selected = self.mapgroupproto_container_tree.selection()
         self.mapgroupproto_selected_point_index = None
         if not selected:
             self.mapgroupproto_selected_container_index = None
+            self.mapgroupproto_selected_kind = "group" if self.selected_mapgroupproto_group() is not None else None
             self.update_mapgroupproto_comment_button()
             return
         match = re.match(r"mapgroupproto-container-(\d+)$", str(selected[0]))
         self.mapgroupproto_selected_container_index = int(match.group(1)) if match else None
+        self.mapgroupproto_selected_kind = "container" if match else "group"
+        if match:
+            self.show_only_mapgroupproto_target_selection("container")
         self.update_mapgroupproto_comment_button()
 
     def on_mapgroupproto_point_select(self, event=None):
-        if self.mapgroupproto_point_tree is None:
+        if self.mapgroupproto_point_tree is None or getattr(self, "mapgroupproto_syncing_selection", False):
             return
         selected = self.mapgroupproto_point_tree.selection()
         if not selected:
             self.mapgroupproto_selected_point_index = None
+            self.mapgroupproto_selected_kind = "container" if self.mapgroupproto_selected_container_index is not None else ("group" if self.selected_mapgroupproto_group() is not None else None)
             self.update_mapgroupproto_comment_button()
             return
         match = re.match(r"mapgroupproto-point-(\d+)-(\d+)$", str(selected[0]))
         self.mapgroupproto_selected_point_index = (int(match.group(1)), int(match.group(2))) if match else None
         if match:
             self.mapgroupproto_selected_container_index = int(match.group(1))
+            self.show_only_mapgroupproto_target_selection("point")
+        self.mapgroupproto_selected_kind = "point" if match else ("container" if self.mapgroupproto_selected_container_index is not None else "group")
         self.update_mapgroupproto_comment_button()
 
     def populate_mapgroupproto_group_detail(self, group):
@@ -13460,22 +13619,73 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.set_mapgroupproto_current_text(self.render_mapgroupproto_root(root), selected_name=selected_name, preserve_issues=True, removed_issue_name=group.name)
         self.set_status(f"Mapgroupproto {target_kind} commented out", "warning")
 
-    def delete_selected_mapgroupproto_group(self, parent=None):
+    def delete_selected_mapgroupproto(self, parent=None, force_kind=""):
         group = self.selected_mapgroupproto_group()
         if group is None or self.mapgroupproto_selected_index is None:
             messagebox.showwarning(APP_TITLE, "Select a mapgroupproto group first.", parent=parent)
             return
-        if not messagebox.askyesno(APP_TITLE, f"Delete selected prototype group?\n\n{group.name}\n\nThis removes it from mapgroupproto.xml.", parent=parent):
+        point = self.selected_mapgroupproto_point(group)
+        container = self.selected_mapgroupproto_container(group)
+        selected_kind = force_kind or getattr(self, "mapgroupproto_selected_kind", None)
+        if not selected_kind:
+            selected_kind = "point" if point is not None else ("container" if container is not None else "group")
+        if selected_kind == "point" and point is not None and container is not None:
+            target_kind = "point"
+            message = f"Delete selected point?\n\n{group.name} -> {container.name} -> {point.pos}\n\nThis removes only this point from mapgroupproto.xml."
+        elif selected_kind == "container" and container is not None:
+            target_kind = "container"
+            message = f"Delete selected container?\n\n{group.name} -> {container.name}\n\nThis removes the container and its points from mapgroupproto.xml."
+        else:
+            target_kind = "group"
+            message = f"Delete selected prototype group?\n\n{group.name}\n\nThis removes the group, its containers, and its points from mapgroupproto.xml."
+        if not messagebox.askyesno(APP_TITLE, message, parent=parent):
             return
         root = self.current_mapgroupproto_root()
         group_record = self.selected_mapgroupproto_group_xml_record(root)
         if group_record is None:
             messagebox.showerror(APP_TITLE, "Selected group no longer exists.", parent=parent)
             return
-        group_node, _group_element, _group_commented = group_record
-        root.remove(group_node)
-        self.set_mapgroupproto_current_text(self.render_mapgroupproto_root(root), preserve_issues=True, removed_issue_name=group.name)
-        self.set_status("Mapgroupproto group deleted", "warning")
+        group_node, group_element, group_commented = group_record
+        selected_name = group.name
+        if target_kind == "point" and self.mapgroupproto_selected_point_index is not None:
+            container_index, point_index = self.mapgroupproto_selected_point_index
+            container_records = self.mapgroupproto_xml_nodes(group_element, "container")
+            if container_index >= len(container_records):
+                messagebox.showerror(APP_TITLE, "Selected container no longer exists.", parent=parent)
+                return
+            container_node, container_element, container_commented = container_records[container_index]
+            point_records = self.mapgroupproto_xml_nodes(container_element, "point")
+            if point_index >= len(point_records):
+                messagebox.showerror(APP_TITLE, "Selected point no longer exists.", parent=parent)
+                return
+            point_node, _point_element, _point_commented = point_records[point_index]
+            container_element.remove(point_node)
+            if container_commented:
+                container_node.text = "\n" + xml_element_to_text(container_element) + "\n"
+            if group_commented:
+                group_node.text = "\n" + xml_element_to_text(group_element) + "\n"
+        elif target_kind == "container" and self.mapgroupproto_selected_container_index is not None:
+            container_records = self.mapgroupproto_xml_nodes(group_element, "container")
+            container_index = self.mapgroupproto_selected_container_index
+            if container_index >= len(container_records):
+                messagebox.showerror(APP_TITLE, "Selected container no longer exists.", parent=parent)
+                return
+            container_node, _container_element, _container_commented = container_records[container_index]
+            group_element.remove(container_node)
+            if group_commented:
+                group_node.text = "\n" + xml_element_to_text(group_element) + "\n"
+        else:
+            root.remove(group_node)
+            selected_name = ""
+        self.mapgroupproto_selected_index = None
+        self.mapgroupproto_selected_container_index = None
+        self.mapgroupproto_selected_point_index = None
+        self.mapgroupproto_selected_kind = None
+        self.set_mapgroupproto_current_text(self.render_mapgroupproto_root(root), selected_name=selected_name, preserve_issues=True, removed_issue_name=group.name)
+        self.set_status(f"Mapgroupproto {target_kind} deleted", "warning")
+
+    def delete_selected_mapgroupproto_group(self, parent=None):
+        self.delete_selected_mapgroupproto(parent=parent, force_kind="group")
 
     def reload_mapgroupproto(self):
         if not self.mapgroupproto_path and not self.ensure_mapgroupproto_loaded():
@@ -21610,12 +21820,15 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.log(f"Compare: {os.path.basename(old_path)} -> {os.path.basename(new_path)}", "success")
         if not changes:
             self.log("No economy changes found.", "success")
+            self.set_status("No compare changes", "success")
+            self.reveal_tool_activity_log()
             return
         for change in changes:
             fields = f" ({', '.join(change.fields)})" if change.fields else ""
             tag = "warning" if change.change_type == "changed" else "muted"
             self.log(f"{change.change_type.upper()}: {change.name}{fields}", tag)
         self.set_status(f"{len(changes)} compare change(s)", "warning")
+        self.reveal_tool_activity_log()
 
     def find_mission_file(self, filename):
         name_key = filename.casefold()
