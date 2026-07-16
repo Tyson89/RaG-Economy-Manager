@@ -3446,6 +3446,14 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.issues = []
         self.validation_issues = []
         self.analysis_issues = []
+        self.data_revision = 0
+        self.issue_revision = 0
+        self.type_table_index_cache_key = None
+        self.type_table_index_cache = None
+        self.source_path_index_cache_key = None
+        self.source_path_index_cache = None
+        self.source_change_cache = {}
+        self.source_revisions = {}
         self.issue_mode = "Loaded validation"
         self.dirty = False
         self.loaded_paths: list[str] = []
@@ -3721,6 +3729,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.config_highlight_after_id = None
         self.config_search_after_id = None
         self.validation_refresh_after_id = None
+        self.validation_request_generation = 0
+        self.validation_in_progress = False
+        self.validation_active_generation = None
+        self.loot_analysis_in_progress = False
         self.window_geometry_after_id = None
         self.window_last_size = None
         self.selected_source_path: str | None = None
@@ -3799,6 +3811,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
         self.search_var = tk.StringVar(value="")
         self.type_search_after_id = None
+        self.type_table_insert_after_id = None
+        self.type_table_refresh_generation = 0
         self.summary_var = tk.StringVar(value="No files loaded")
         self.status_var = tk.StringVar(value="Idle")
         self.module_subtitle_var = tk.StringVar(value="Current module: Dashboard")
@@ -10802,6 +10816,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.reload_all()
 
     def reload_all(self):
+        self.validation_request_generation += 1
+        self.data_revision = self.__dict__.get("data_revision", 0) + 1
+        self.source_path_index_cache_key = None
+        self.source_path_index_cache = None
+        self.source_change_cache = {}
+        self.source_revisions = {}
         dedicated_names = {"events.xml", "cfgeventspawns.xml", "cfgeventgroups.xml", "cfgspawnabletypes.xml", "cfgrandompresets.xml", "cfgenvironment.xml", "cfgeconomycore.xml", "cfgweather.xml", "mapgroupproto.xml", "mapgrouppos.xml"}
         type_paths = [path for path in self.loaded_paths if Path(path).name.casefold() not in dedicated_names and not Path(path).name.casefold().endswith("_territories.xml")]
         self.entries, loaded_issues = load_types_files(type_paths, include_duplicates=False)
@@ -10827,7 +10847,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.original_spawnable_entries = [entry.clone() for entry in self.spawnable_entries]
         self.original_random_preset_entries = [entry.clone() for entry in self.random_preset_entries]
         self.original_event_entries = [entry.clone() for entry in self.event_entries]
+        self.original_event_spawn_groups = [group.clone() for group in self.event_spawn_groups]
+        self.original_event_group_definitions = [group.clone() for group in self.event_group_definitions]
         self.original_territory_zones = [zone.clone() for zone in self.territory_zones]
+        self.original_territory_groups = [group.clone() for group in self.territory_groups]
         self.territory_undo_stack = []
         self.territory_redo_stack = []
         self.territory_layer_vars = {}
@@ -18574,6 +18597,34 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             headers["Accept"] = accept
         return headers
 
+    def run_modal_background(self, title, message, operation):
+        progress = ProgressWindow(self, title, message)
+        progress.progress.configure(mode="indeterminate")
+        progress.progress.start(12)
+        completed = tk.BooleanVar(value=False)
+        state = {"result": None, "error": None}
+
+        def finish(result, error):
+            state["result"] = result
+            state["error"] = error
+            if progress.winfo_exists():
+                progress.progress.stop()
+                progress.destroy()
+            completed.set(True)
+
+        def worker():
+            try:
+                result = operation()
+                error = None
+            except Exception as exc:
+                result = None
+                error = exc
+            self.after(0, lambda: finish(result, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.wait_variable(completed)
+        return state["result"], state["error"]
+
     def read_github_map_url(self, url, accept="application/vnd.github+json", timeout=60):
         request = urllib.request.Request(url, headers=self.map_asset_request_headers(accept))
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -18635,24 +18686,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def stream_github_url_to_file(self, url, output_path, label, accept=""):
         output_path = Path(output_path)
         temp_path = output_path.with_suffix(output_path.suffix + ".part")
-        progress = ProgressWindow(self, "Downloading Map", f"Downloading {label}...")
         digest = hashlib.sha256()
-        downloaded = 0
         try:
             request = urllib.request.Request(url, headers=self.map_asset_request_headers(accept))
             with urllib.request.urlopen(request, timeout=120) as response:
-                total_header = response.headers.get("Content-Length") or ""
-                try:
-                    total = int(total_header)
-                except ValueError:
-                    total = 0
-                if total > 0:
-                    progress.update_progress(0, total, detail=f"0 B of {format_download_size(total)}")
-                else:
-                    progress.progress.configure(mode="indeterminate")
-                    progress.progress.start(12)
-                    progress.update_progress(detail="Starting download...")
-
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 with temp_path.open("wb") as file:
                     while True:
@@ -18661,24 +18698,10 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                             break
                         file.write(chunk)
                         digest.update(chunk)
-                        downloaded += len(chunk)
-                        if total > 0:
-                            percent = min(100.0, (downloaded / total) * 100)
-                            detail = f"{format_download_size(downloaded)} of {format_download_size(total)} ({percent:.0f}%)"
-                            progress.update_progress(downloaded, total, detail=detail)
-                        else:
-                            progress.update_progress(detail=f"{format_download_size(downloaded)} downloaded")
-                        self.update_idletasks()
             if temp_path.exists():
                 temp_path.replace(output_path)
             return digest.hexdigest()
         finally:
-            try:
-                progress.progress.stop()
-            except Exception:
-                pass
-            if progress.winfo_exists():
-                progress.destroy()
             if temp_path.exists():
                 try:
                     temp_path.unlink()
@@ -18693,18 +18716,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         encoding = str(item.get("encoding", "") or "")
         if encoded and encoding == "base64":
             data = base64.b64decode(encoded)
-            progress = ProgressWindow(self, "Downloading Map", f"Downloading {label}...")
-            try:
-                progress.update_progress(50, 100, detail=f"{format_download_size(len(data))} received")
-                digest = hashlib.sha256(data).hexdigest()
-                output_path = Path(output_path)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_bytes(data)
-                progress.update_progress(100, 100, detail="Download complete")
-                return digest
-            finally:
-                if progress.winfo_exists():
-                    progress.destroy()
+            digest = hashlib.sha256(data).hexdigest()
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(data)
+            return digest
         download_url = str(item.get("download_url", "") or "").strip()
         if download_url:
             return self.stream_github_url_to_file(download_url, output_path, label, accept="")
@@ -18755,7 +18771,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return {}
 
     def refresh_map_manifest(self, show_errors=True):
-        try:
+        def operation():
             manifest = None
             self.map_release_cache = None
             manifest_asset = None
@@ -18786,14 +18802,18 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 raise ValueError("Manifest must contain a maps object.")
             path = self.map_manifest_cache_path()
             path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-            self.map_manifest_cache = manifest
-            self.log(f"Map manifest refreshed: {len(maps)} map definition(s).", "success")
-            return True
-        except (OSError, urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
-            self.log(f"Could not refresh map manifest: {exc}", "error")
+            return manifest, len(maps)
+
+        result, error = self.run_modal_background("Map Repository", "Refreshing map definitions...", operation)
+        if error is not None:
+            self.log(f"Could not refresh map manifest: {error}", "error")
             if show_errors:
-                messagebox.showerror(APP_TITLE, f"Could not refresh map manifest from {MAP_ASSET_REPO}:\n\n{exc}")
+                messagebox.showerror(APP_TITLE, f"Could not refresh map manifest from {MAP_ASSET_REPO}:\n\n{error}")
             return False
+        manifest, map_count = result
+        self.map_manifest_cache = manifest
+        self.log(f"Map manifest refreshed: {map_count} map definition(s).", "success")
+        return True
 
     def clear_map_asset_cache(self):
         cache_dir = self.local_map_asset_dir()
@@ -19295,7 +19315,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return "", ""
         filename = str(map_info.get("file") or map_info.get("filename") or f"{map_key}.png").strip()
         cache_path = self.local_map_asset_dir() / map_key / Path(filename).name
-        try:
+
+        def operation():
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             if url:
                 actual_hash = self.stream_github_url_to_file(url, cache_path, label, accept="")
@@ -19319,12 +19340,15 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                     except OSError:
                         pass
                     raise ValueError(f"SHA-256 mismatch for {label}. Expected {expected_hash}, got {actual_hash}.")
+            return str(cache_path)
+
+        downloaded_path, error = self.run_modal_background("Downloading Map", f"Downloading {label}...", operation)
+        if error is None:
             self.log(f"Downloaded map asset: {label}", "success")
-            return str(cache_path), "downloaded"
-        except (OSError, urllib.error.URLError, TimeoutError, ValueError) as exc:
-            self.log(f"Could not download map asset {label}: {exc}", "error")
-            messagebox.showerror(APP_TITLE, f"Could not download map asset:\n\n{exc}")
-            return "", ""
+            return downloaded_path, "downloaded"
+        self.log(f"Could not download map asset {label}: {error}", "error")
+        messagebox.showerror(APP_TITLE, f"Could not download map asset:\n\n{error}")
+        return "", ""
 
     def resolve_map_image(self, map_key):
         if not map_key:
@@ -19720,13 +19744,14 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.log(f"Updated event {old_name} -> {entry.name}.", "success")
 
     def load_event_validation_only(self):
-        file_issues = [issue for issue in self.validation_issues if not issue.name and self.normalized_path(issue.source_path) not in {self.normalized_path(path) for path in self.event_source_paths() + self.event_spawn_source_paths() + self.event_group_source_paths() + self.territory_source_paths() + ([self.environment_path] if self.environment_path else [])}]
+        file_issues = [issue for issue in self.validation_issues if not issue.name]
         self.event_spawn_positions = event_spawn_positions_by_name(self.event_spawn_groups)
         self.event_issues = self.territory_issues + self.validate_event_relationships()
         self.mark_territory_related_event_cache_stale()
         self.set_validation_issues(file_issues + self.environment_issues + self.validate_loaded_entries() + self.event_issues)
 
     def schedule_validation_refresh(self, delay=450):
+        self.validation_request_generation += 1
         if self.validation_refresh_after_id:
             try:
                 self.after_cancel(self.validation_refresh_after_id)
@@ -19736,13 +19761,59 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def run_deferred_validation_refresh(self):
         self.validation_refresh_after_id = None
+        generation = self.validation_request_generation
         file_issues = [issue for issue in self.validation_issues if not issue.name]
-        self.spawnable_issues = validate_spawnable_type_references(self.spawnable_entries, self.entries)
-        self.random_preset_issues = validate_random_preset_references(self.random_preset_entries, self.entries)
-        self.event_spawn_positions = event_spawn_positions_by_name(self.event_spawn_groups)
-        self.event_issues = self.territory_issues + self.validate_event_relationships()
+        entries = [entry.clone() for entry in self.entries]
+        spawnable_entries = [entry.clone() for entry in self.spawnable_entries]
+        random_preset_entries = [entry.clone() for entry in self.random_preset_entries]
+        event_entries = [entry.clone() for entry in self.event_entries]
+        event_spawn_groups = copy.deepcopy(self.event_spawn_groups)
+        event_group_definitions = copy.deepcopy(self.event_group_definitions)
+        territory_zones = [zone.clone() for zone in self.territory_zones]
+        territory_issues = list(self.territory_issues)
+        relation_definitions = copy.deepcopy(self.relation_definitions)
+        environment_map = copy.deepcopy(self.event_environment_map())
+        self.validation_in_progress = True
+        self.validation_active_generation = generation
+
+        def worker():
+            try:
+                spawnable_issues = validate_spawnable_type_references(spawnable_entries, entries)
+                random_preset_issues = validate_random_preset_references(random_preset_entries, entries)
+                event_positions = event_spawn_positions_by_name(event_spawn_groups)
+                event_issues = territory_issues + validate_event_entries(event_entries) + validate_event_spawn_links(
+                    event_entries,
+                    event_spawn_groups,
+                    territory_zones,
+                    environment_map,
+                    event_group_definitions,
+                )
+                entry_issues = validate_entries(entries, relation_definitions=relation_definitions)
+                result = (spawnable_issues, random_preset_issues, event_positions, event_issues, entry_issues)
+                error = None
+            except Exception as exc:
+                result = None
+                error = exc
+            self.after(0, lambda: self.finish_deferred_validation_refresh(generation, file_issues, result, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_deferred_validation_refresh(self, generation, file_issues, result, error):
+        if generation != self.validation_request_generation:
+            if self.validation_active_generation == generation:
+                self.validation_active_generation = None
+                self.validation_in_progress = False
+            return
+        self.validation_active_generation = None
+        self.validation_in_progress = False
+        if error is not None:
+            self.log(f"Background validation failed: {error}", "error")
+            self.set_status("Validation failed", "error")
+            return
+        self.spawnable_issues, self.random_preset_issues, self.event_spawn_positions, self.event_issues, entry_issues = result
+        self.rebuild_event_secondary_link_cache()
         self.mark_territory_related_event_cache_stale()
-        self.set_validation_issues(file_issues + self.environment_issues + self.validate_loaded_entries() + self.spawnable_issues + self.random_preset_issues + self.event_issues, mode=self.issue_mode)
+        self.set_validation_issues(file_issues + self.environment_issues + entry_issues + self.spawnable_issues + self.random_preset_issues + self.event_issues, mode=self.issue_mode)
         if self.active_module == "events":
             self.refresh_event_table()
         elif self.active_module == "territories":
@@ -19761,6 +19832,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.update_summary()
 
     def clear_files(self):
+        self.validation_request_generation += 1
+        self.data_revision = self.__dict__.get("data_revision", 0) + 1
+        self.source_path_index_cache_key = None
+        self.source_path_index_cache = None
+        self.source_change_cache = {}
+        self.source_revisions = {}
         self.entries = []
         self.spawnable_entries = []
         self.random_preset_entries = []
@@ -19912,6 +19989,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def merge_issue_layers(self):
         self.issues = list(self.validation_issues) + list(self.analysis_issues)
+        self.issue_revision = self.__dict__.get("issue_revision", 0) + 1
 
     def dedupe_issues(self, issues):
         seen = set()
@@ -20150,27 +20228,134 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if not self.loaded_paths and self.mission_workspace is None and not self.config_paths and not self.profile_config_paths:
             messagebox.showwarning(APP_TITLE, "Load a mission folder or at least one supported file first.")
             return
-        if self.mission_workspace is not None:
-            file_issues = validate_mission_workspace_xml(self.mission_workspace.root_path)
-        else:
-            file_issues = validate_xml_files(self.loaded_paths)
-        self.event_issues = self.territory_issues + self.validate_event_relationships()
-        self.spawnable_issues = validate_spawnable_type_references(self.spawnable_entries, self.entries)
-        self.random_preset_issues = validate_random_preset_references(self.random_preset_entries, self.entries)
+        if self.validation_refresh_after_id:
+            try:
+                self.after_cancel(self.validation_refresh_after_id)
+            except tk.TclError:
+                pass
+            self.validation_refresh_after_id = None
+        self.validation_request_generation += 1
+        generation = self.validation_request_generation
+        workspace_root = self.mission_workspace.root_path if self.mission_workspace is not None else ""
+        loaded_paths = list(self.loaded_paths)
+        entries = [entry.clone() for entry in self.entries]
+        spawnable_entries = [entry.clone() for entry in self.spawnable_entries]
+        random_preset_entries = [entry.clone() for entry in self.random_preset_entries]
+        event_entries = [entry.clone() for entry in self.event_entries]
+        event_spawn_groups = copy.deepcopy(self.event_spawn_groups)
+        event_group_definitions = copy.deepcopy(self.event_group_definitions)
+        territory_zones = [zone.clone() for zone in self.territory_zones]
+        territory_issues = list(self.territory_issues)
+        relation_definitions = copy.deepcopy(self.relation_definitions)
+        environment_map = copy.deepcopy(self.event_environment_map())
+        environment_issues = list(self.environment_issues)
         weather_issues = self.current_weather_validation_issues() if self.weather_path else []
-        mapgroupproto_issues = []
-        if self.ensure_mapgroupproto_loaded():
-            self.validate_mapgroupproto_current_text(show_success=False)
-            mapgroupproto_issues = list(self.mapgroupproto_issues)
-        self.set_validation_issues(file_issues + self.validate_loaded_entries() + self.spawnable_issues + self.random_preset_issues + self.event_issues + weather_issues + mapgroupproto_issues + self.validate_loaded_config_files(), mode="Workspace validation")
+        self.ensure_mapgroupproto_loaded()
+        mapgroupproto_text = self.mapgroupproto_current_text
+        mapgroupproto_path = self.mapgroupproto_path
+        mapgrouppos_path = self.mapgrouppos_path
+        config_issues = self.validate_loaded_config_files()
+        self.validation_in_progress = True
+        self.validation_active_generation = generation
+        self.set_status("Validating workspace...", "warning")
+
+        def worker():
+            try:
+                file_issues = validate_mission_workspace_xml(workspace_root) if workspace_root else validate_xml_files(loaded_paths)
+                spawnable_issues = validate_spawnable_type_references(spawnable_entries, entries)
+                random_preset_issues = validate_random_preset_references(random_preset_entries, entries)
+                event_positions = event_spawn_positions_by_name(event_spawn_groups)
+                event_issues = territory_issues + validate_event_entries(event_entries) + validate_event_spawn_links(
+                    event_entries,
+                    event_spawn_groups,
+                    territory_zones,
+                    environment_map,
+                    event_group_definitions,
+                )
+                entry_issues = validate_entries(entries, relation_definitions=relation_definitions)
+                mapgroupproto_groups = []
+                mapgroupproto_issues = []
+                if mapgroupproto_text.strip():
+                    temp_path = ""
+                    try:
+                        with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False, encoding="utf-8") as handle:
+                            handle.write(mapgroupproto_text)
+                            temp_path = handle.name
+                        mapgroupproto_groups, parsed_issues = parse_mapgroupproto_file(
+                            temp_path,
+                            mapgrouppos_path or None,
+                            type_entries=entries,
+                            relation_definitions=relation_definitions,
+                        )
+                        mapgroupproto_issues = [
+                            ValidationIssue(issue.severity, issue.name, issue.message, mapgroupproto_path, issue.suggestion, issue.line, issue.column)
+                            for issue in parsed_issues
+                        ]
+                    finally:
+                        if temp_path:
+                            try:
+                                Path(temp_path).unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                result = (file_issues, spawnable_issues, random_preset_issues, event_positions, event_issues, entry_issues, mapgroupproto_groups, mapgroupproto_issues)
+                error = None
+            except Exception as exc:
+                result = None
+                error = exc
+            self.after(
+                0,
+                lambda: self.finish_workspace_validation(
+                    generation,
+                    result,
+                    error,
+                    environment_issues,
+                    weather_issues,
+                    config_issues,
+                ),
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_workspace_validation(self, generation, result, error, environment_issues, weather_issues, config_issues):
+        if generation != self.validation_request_generation:
+            if self.validation_active_generation == generation:
+                self.validation_active_generation = None
+                self.validation_in_progress = False
+                self.set_status("Validation outdated after newer edits", "warning")
+            return
+        self.validation_active_generation = None
+        self.validation_in_progress = False
+        if error is not None:
+            self.log(f"Workspace validation failed: {error}", "error")
+            self.set_status("Validation failed", "error")
+            return
+        file_issues, self.spawnable_issues, self.random_preset_issues, self.event_spawn_positions, self.event_issues, entry_issues, mapgroupproto_groups, mapgroupproto_issues = result
+        if self.mapgroupproto_current_text.strip():
+            self.mapgroupproto_groups = mapgroupproto_groups
+            self.mapgroupproto_issues = mapgroupproto_issues
+            self.mapgroupproto_parsed_text = self.mapgroupproto_current_text
+            self.populate_mapgroupproto_tables()
+            error_count = sum(1 for issue in mapgroupproto_issues if issue.severity == "error")
+            warning_count = sum(1 for issue in mapgroupproto_issues if issue.severity == "warning")
+            self.mapgroupproto_status_var.set(
+                f"{self.source_display_name(self.mapgroupproto_path)}: {len(mapgroupproto_groups)} group(s), "
+                f"{sum(group.container_count for group in mapgroupproto_groups)} container(s), "
+                f"{sum(group.point_count for group in mapgroupproto_groups)} point(s). "
+                f"mapgrouppos placements: {'loaded' if self.mapgrouppos_path else 'missing'}. "
+                f"{error_count} error(s), {warning_count} warning(s)."
+            )
+        self.rebuild_event_secondary_link_cache()
+        self.mark_territory_related_event_cache_stale()
+        self.set_validation_issues(file_issues + environment_issues + entry_issues + self.spawnable_issues + self.random_preset_issues + self.event_issues + weather_issues + mapgroupproto_issues + config_issues, mode="Workspace validation")
         self.last_workspace_validation_at = datetime.now()
         self.workspace_validation_stale = False
         kept = f" Kept {len(self.analysis_issues)} economy hint(s)." if self.analysis_issues else ""
         self.log(f"Workspace validation complete.{kept}", "success")
-        self.refresh_spawnable_table()
-        self.refresh_random_preset_table()
-        self.refresh_event_table()
-        self.refresh_issues_view()
+        self.log_issues()
+        self.mark_module_views_stale("types", "spawnabletypes", "randompresets", "events", "environment", "territories", "mapgroupproto", "configs", "profiles")
+        self.refresh_active_module_view()
+        self.refresh_dashboard()
+        self.update_summary()
 
     def analyze_current(self):
         if not self.loaded_paths:
@@ -20353,8 +20538,32 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             self.after_cancel(self.type_search_after_id)
         self.type_search_after_id = self.after(120, self.refresh_table)
 
+    def type_table_indexes(self):
+        cache_key = (self.data_revision, self.issue_revision)
+        if self.type_table_index_cache_key == cache_key and self.type_table_index_cache is not None:
+            return self.type_table_index_cache
+        indexes = (
+            {name.casefold() for name in get_duplicate_groups(self.entries)},
+            {issue.name.casefold() for issue in self.issues if issue.severity in {"error", "warning"} and issue.name},
+            {issue.name.casefold() for issue in self.issues if issue.severity == "error" and issue.name},
+            {issue.name.casefold() for issue in self.issues if issue.severity == "warning" and issue.name},
+            {issue.name.casefold() for issue in self.issues if issue.severity == "info" and issue.name},
+            *self.type_reference_name_sets(),
+        )
+        self.type_table_index_cache_key = cache_key
+        self.type_table_index_cache = indexes
+        return indexes
+
     def refresh_table(self):
         self.type_search_after_id = None
+        self.type_table_refresh_generation += 1
+        generation = self.type_table_refresh_generation
+        if self.type_table_insert_after_id:
+            try:
+                self.after_cancel(self.type_table_insert_after_id)
+            except tk.TclError:
+                pass
+            self.type_table_insert_after_id = None
         self.update_type_sort_headings()
         search = self.search_var.get().strip().casefold()
         view = self.filter_var.get()
@@ -20362,32 +20571,31 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         usage_filter = self.active_usage_filter
         usage_kind = usage_filter[0] if usage_filter else ""
         usage_value = usage_filter[1].casefold() if usage_filter else ""
-        duplicate_names = {name.casefold() for name in get_duplicate_groups(self.entries)}
-        warning_or_error_names = {issue.name.casefold() for issue in self.issues if issue.severity in {"error", "warning"} and issue.name}
-        error_names = {issue.name.casefold() for issue in self.issues if issue.severity == "error" and issue.name}
-        warning_names = {issue.name.casefold() for issue in self.issues if issue.severity == "warning" and issue.name}
-        info_names = {issue.name.casefold() for issue in self.issues if issue.severity == "info" and issue.name}
-        spawnable_link_names, random_preset_link_names = self.type_reference_name_sets()
+        duplicate_names, warning_or_error_names, error_names, warning_names, info_names, spawnable_link_names, random_preset_link_names = self.type_table_indexes()
 
         self.rebuilding_table = True
-        try:
-            self.tree.delete(*self.tree.get_children())
-            self.filtered_indices = []
-            self.tree_iids = {}
+        self.tree.delete(*self.tree.get_children())
+        self.filtered_indices = []
+        self.tree_iids = {}
 
-            visible_entries = []
-            for index, entry in enumerate(self.entries):
-                if selected_source_key and self.normalized_path(entry.source_path) != selected_source_key:
-                    continue
-                if usage_filter and usage_value not in {name.casefold() for name in entry.relation_names(usage_kind)}:
-                    continue
-                if search and search not in entry.name.casefold() and search not in ",".join(entry.relation_names("category")).casefold():
-                    continue
-                if not self.type_entry_matches_view_filter(entry, view, duplicate_names, warning_or_error_names, info_names):
-                    continue
-                visible_entries.append((index, entry))
+        visible_entries = []
+        for index, entry in enumerate(self.entries):
+            if selected_source_key and self.normalized_path(entry.source_path) != selected_source_key:
+                continue
+            if usage_filter and usage_value not in {name.casefold() for name in entry.relation_names(usage_kind)}:
+                continue
+            if search and search not in entry.name.casefold() and search not in ",".join(entry.relation_names("category")).casefold():
+                continue
+            if not self.type_entry_matches_view_filter(entry, view, duplicate_names, warning_or_error_names, info_names):
+                continue
+            visible_entries.append((index, entry))
+        visible_entries.sort(key=self.type_entry_sort_key, reverse=self.type_sort_reverse)
 
-            for index, entry in sorted(visible_entries, key=self.type_entry_sort_key, reverse=self.type_sort_reverse):
+        def insert_chunk(start=0):
+            if generation != self.type_table_refresh_generation:
+                return
+            end = min(start + 300, len(visible_entries))
+            for index, entry in visible_entries[start:end]:
                 tag = ""
                 if entry.name.casefold() in error_names:
                     tag = "error"
@@ -20413,23 +20621,25 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 )
                 self.filtered_indices.append(index)
                 self.tree_iids[iid] = index
-            if self.current_index is not None and str(self.current_index) in self.tree.get_children():
+            if end < len(visible_entries):
+                self.type_table_insert_after_id = self.after(1, lambda: insert_chunk(end))
+                return
+            self.type_table_insert_after_id = None
+            if self.current_index is not None and str(self.current_index) in self.tree_iids:
                 self.tree.selection_set(str(self.current_index))
                 self.tree.see(str(self.current_index))
-        finally:
             self.rebuilding_table = False
-        self.update_selected_issue_panel()
+            self.update_selected_issue_panel()
+
+        insert_chunk()
 
     def update_visible_tree_row(self, index):
         iid = str(index)
-        if index is None or index >= len(self.entries) or iid not in self.tree.get_children():
+        if index is None or index >= len(self.entries) or iid not in self.tree_iids:
             self.refresh_table()
             return
         entry = self.entries[index]
-        duplicate_names = {name.casefold() for name in get_duplicate_groups(self.entries)}
-        error_names = {issue.name.casefold() for issue in self.issues if issue.severity == "error" and issue.name}
-        warning_names = {issue.name.casefold() for issue in self.issues if issue.severity == "warning" and issue.name}
-        info_names = {issue.name.casefold() for issue in self.issues if issue.severity == "info" and issue.name}
+        duplicate_names, _warning_or_error_names, error_names, warning_names, info_names, _spawnable_names, _random_names = self.type_table_indexes()
         tag = ""
         if entry.name.casefold() in error_names:
             tag = "error"
@@ -21445,7 +21655,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def select_next_duplicate(self):
         duplicates = get_duplicate_groups(self.entries)
-        duplicate_indices = [index for index, entry in enumerate(self.entries) if any(entry.name.casefold() == name.casefold() for name in duplicates)]
+        duplicate_keys = {name.casefold() for name in duplicates}
+        duplicate_indices = [index for index, entry in enumerate(self.entries) if entry.name.casefold() in duplicate_keys]
         if not duplicate_indices:
             self.log("No duplicate classnames found.", "success")
             return
@@ -21883,6 +22094,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         if not self.entries:
             messagebox.showwarning(APP_TITLE, "Load a mission folder or Types files first.")
             return
+        if self.loot_analysis_in_progress:
+            self.set_status("Loot analysis already running", "warning")
+            return
         mapgroupproto_path = self.find_mission_file("mapgroupproto.xml")
         mapgrouppos_path = self.find_mission_file("mapgrouppos.xml")
         missing = []
@@ -21897,18 +22111,41 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 + "\n".join(f"- {item}" for item in missing),
             )
             return
-        try:
-            report = analyze_loot_distribution(
-                self.entries,
-                mapgroupproto_path,
-                mapgrouppos_path,
-                spawnable_entries=self.spawnable_entries,
-                random_presets=self.random_preset_entries,
-                events=self.event_entries,
-                event_spawn_positions=self.event_spawn_positions,
-            )
-        except (OSError, ET.ParseError) as exc:
-            messagebox.showerror(APP_TITLE, f"Could not analyze loot distribution:\n{exc}")
+        entries = [entry.clone() for entry in self.entries]
+        spawnable_entries = [entry.clone() for entry in self.spawnable_entries]
+        random_presets = [entry.clone() for entry in self.random_preset_entries]
+        events = [entry.clone() for entry in self.event_entries]
+        event_spawn_positions = copy.deepcopy(self.event_spawn_positions)
+        progress = ProgressWindow(self, "Economy Health / Loot Balance", "Analyzing loot distribution...", maximum=1)
+        self.loot_analysis_in_progress = True
+        self.set_status("Analyzing loot distribution...", "warning")
+
+        def worker():
+            try:
+                report = analyze_loot_distribution(
+                    entries,
+                    mapgroupproto_path,
+                    mapgrouppos_path,
+                    spawnable_entries=spawnable_entries,
+                    random_presets=random_presets,
+                    events=events,
+                    event_spawn_positions=event_spawn_positions,
+                )
+                error = None
+            except (OSError, ET.ParseError, ValueError) as exc:
+                report = None
+                error = exc
+            self.after(0, lambda: self.finish_loot_distribution_report(progress, report, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_loot_distribution_report(self, progress, report, error):
+        self.loot_analysis_in_progress = False
+        if progress.winfo_exists():
+            progress.destroy()
+        if error is not None:
+            messagebox.showerror(APP_TITLE, f"Could not analyze loot distribution:\n{error}")
+            self.set_status("Loot analysis failed", "error")
             return
         self.open_loot_distribution_table_window(report)
         self.log(
@@ -21916,6 +22153,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             f"{len(report.item_rows)} item row(s), {len(report.relation_summaries)} relation row(s), {len(report.unmatched_items)} unmatched item(s).",
             "success" if not report.warnings else "warning",
         )
+        self.set_status("Loot analysis complete", "success")
 
     def open_loot_distribution_table_window(self, report):
         window = tk.Toplevel(self)
@@ -22230,6 +22468,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         ttk.Label(detail, textvariable=detail_var, style="FieldMuted.TLabel", wraplength=980, justify="left").grid(row=0, column=0, sticky="w")
 
         sort_state = {"column": "rarity_view", "reverse": True}
+        row_refresh_state = {"generation": 0, "after_id": None, "search_after_id": None}
         label_weight = {
             "Unique / Extremely Rare": 0,
             "Very Rare": 1,
@@ -22438,38 +22677,73 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             tree.configure(displaycolumns=full if show_details_var.get() else compact)
 
         def refresh_rows(*_args):
+            if row_refresh_state["search_after_id"]:
+                try:
+                    window.after_cancel(row_refresh_state["search_after_id"])
+                except tk.TclError:
+                    pass
+                row_refresh_state["search_after_id"] = None
+            if row_refresh_state["after_id"]:
+                try:
+                    window.after_cancel(row_refresh_state["after_id"])
+                except tk.TclError:
+                    pass
+                row_refresh_state["after_id"] = None
+            row_refresh_state["generation"] += 1
+            generation = row_refresh_state["generation"]
             set_display_columns()
             tree.delete(*tree.get_children())
-            for index, row in enumerate(current_filtered_rows()):
-                iid = f"item:{index}:{row.class_name}"
-                tree.insert(
-                    "",
-                    "end",
-                    iid=iid,
-                    text=row.class_name,
-                    values=(
-                        row.estimated_rarity_label,
-                        f"{row.findability_score * 100:.4f}%",
-                        f"1 per {row.rarity_index:,.0f}",
-                        f"{row.eligible_spawn_points:,}",
-                        row.nominal,
-                        row.spawn_source_text,
-                        row.minimum,
-                        row.lifetime,
-                        row.restock,
-                        row.cost,
-                        row.category_text,
-                        row.usage_text,
-                        row.value_text,
-                        row.tag_text,
-                        row.hoarding_sensitivity,
-                        f"{row.location_density:.6f}",
-                        f"{row.effective_rarity_score:.6f}",
-                    ),
-                    tags=(row.estimated_rarity_label,),
-                )
-            count = len(tree.get_children())
-            detail_var.set(f"{count} item row(s) shown. Select one for details.")
+            rows = current_filtered_rows()
+            detail_var.set(f"Loading {len(rows)} item row(s)...")
+
+            def insert_chunk(start=0):
+                if generation != row_refresh_state["generation"]:
+                    return
+                end = min(start + 250, len(rows))
+                for index in range(start, end):
+                    row = rows[index]
+                    iid = f"item:{index}:{row.class_name}"
+                    tree.insert(
+                        "",
+                        "end",
+                        iid=iid,
+                        text=row.class_name,
+                        values=(
+                            row.estimated_rarity_label,
+                            f"{row.findability_score * 100:.4f}%",
+                            f"1 per {row.rarity_index:,.0f}",
+                            f"{row.eligible_spawn_points:,}",
+                            row.nominal,
+                            row.spawn_source_text,
+                            row.minimum,
+                            row.lifetime,
+                            row.restock,
+                            row.cost,
+                            row.category_text,
+                            row.usage_text,
+                            row.value_text,
+                            row.tag_text,
+                            row.hoarding_sensitivity,
+                            f"{row.location_density:.6f}",
+                            f"{row.effective_rarity_score:.6f}",
+                        ),
+                        tags=(row.estimated_rarity_label,),
+                    )
+                if end < len(rows):
+                    row_refresh_state["after_id"] = window.after(1, lambda: insert_chunk(end))
+                    return
+                row_refresh_state["after_id"] = None
+                detail_var.set(f"{len(rows)} item row(s) shown. Select one for details.")
+
+            insert_chunk()
+
+        def schedule_refresh_rows(*_args):
+            if row_refresh_state["search_after_id"]:
+                try:
+                    window.after_cancel(row_refresh_state["search_after_id"])
+                except tk.TclError:
+                    pass
+            row_refresh_state["search_after_id"] = window.after(160, refresh_rows)
 
         def sort_by(column):
             if sort_state["column"] == column:
@@ -22537,7 +22811,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         source_combo.bind("<<ComboboxSelected>>", refresh_rows, add="+")
         for combo in relation_combos:
             combo.bind("<<ComboboxSelected>>", refresh_rows, add="+")
-        search.bind("<KeyRelease>", refresh_rows, add="+")
+        search.bind("<KeyRelease>", schedule_refresh_rows, add="+")
         details_check.configure(command=refresh_rows)
 
         def save_text_file(title, extension, text_factory):
@@ -22809,10 +23083,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def changed_source_paths(self):
         paths = []
+        seen = set()
         economycore_paths = [self.economycore_path] if self.economycore_path else []
         for path in self.loaded_paths + self.spawnable_source_paths() + self.random_preset_source_paths() + self.event_source_paths() + self.territory_source_paths() + economycore_paths:
-            if self.normalized_path(path) in {self.normalized_path(existing) for existing in paths}:
+            source_key = self.normalized_path(path)
+            if source_key in seen:
                 continue
+            seen.add(source_key)
             if self.source_has_changes(path):
                 paths.append(path)
         return paths
@@ -23257,6 +23534,31 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def normalized_path(self, path):
         return os.path.normcase(os.path.abspath(path))
 
+    def source_path_indexes(self):
+        path_groups = {
+            "types": tuple(self.loaded_paths),
+            "spawnable": tuple(self.spawnable_source_paths()),
+            "random_preset": tuple(self.random_preset_source_paths()),
+            "events": tuple(self.event_source_paths()),
+            "event_spawns": tuple(self.event_spawn_source_paths()),
+            "event_groups": tuple(self.event_group_source_paths()),
+            "territories": tuple(self.territory_source_paths()),
+            "configs": tuple(self.config_paths),
+            "profiles": tuple(self.profile_config_paths),
+        }
+        cache_key = tuple((name, paths) for name, paths in path_groups.items())
+        cached_key = self.__dict__.get("source_path_index_cache_key")
+        cached_indexes = self.__dict__.get("source_path_index_cache")
+        if cached_key == cache_key and cached_indexes is not None:
+            return cached_indexes
+        indexes = {
+            name: {self.normalized_path(path) for path in paths}
+            for name, paths in path_groups.items()
+        }
+        self.source_path_index_cache_key = cache_key
+        self.source_path_index_cache = indexes
+        return indexes
+
     def is_dedicated_module_source_path(self, path):
         source_key = self.normalized_path(path)
         if self.is_environment_source_path(path):
@@ -23267,15 +23569,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return True
         if self.is_mapgroupproto_source_path(path):
             return True
-        if source_key in {self.normalized_path(type_path) for type_path in self.loaded_paths}:
-            return True
-        if source_key in {self.normalized_path(spawnable_path) for spawnable_path in self.spawnable_source_paths()}:
-            return True
-        if source_key in {self.normalized_path(random_path) for random_path in self.random_preset_source_paths()}:
-            return True
-        if source_key in {self.normalized_path(event_path) for event_path in self.event_source_paths() + self.event_spawn_source_paths() + self.event_group_source_paths()}:
-            return True
-        if source_key in {self.normalized_path(territory_path) for territory_path in self.territory_source_paths()}:
+        indexes = self.source_path_indexes()
+        if any(source_key in indexes[name] for name in ("types", "spawnable", "random_preset", "events", "event_spawns", "event_groups", "territories")):
             return True
         if Path(path).name.casefold() == "cfglimitsdefinition.xml":
             return True
@@ -23283,7 +23578,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def is_config_source_path(self, path):
         source_key = self.normalized_path(path)
-        return source_key in {self.normalized_path(config_path) for config_path in self.config_paths + self.profile_config_paths} and not self.is_dedicated_module_source_path(path)
+        indexes = self.source_path_indexes()
+        return source_key in indexes["configs"] | indexes["profiles"] and not self.is_dedicated_module_source_path(path)
 
     def is_weather_source_path(self, path):
         weather_path = self.__dict__.get("weather_path", "")
@@ -23305,27 +23601,27 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def is_profile_config_source_path(self, path):
         source_key = self.normalized_path(path)
-        return source_key in {self.normalized_path(config_path) for config_path in self.profile_config_paths}
+        return source_key in self.source_path_indexes()["profiles"]
 
     def is_type_source_path(self, path):
         source_key = self.normalized_path(path)
-        return source_key in {self.normalized_path(type_path) for type_path in self.loaded_paths}
+        return source_key in self.source_path_indexes()["types"]
 
     def is_spawnable_source_path(self, path):
         source_key = self.normalized_path(path)
-        return source_key in {self.normalized_path(spawnable_path) for spawnable_path in self.spawnable_source_paths()}
+        return source_key in self.source_path_indexes()["spawnable"]
 
     def is_random_preset_source_path(self, path):
         source_key = self.normalized_path(path)
-        return source_key in {self.normalized_path(random_path) for random_path in self.random_preset_source_paths()}
+        return source_key in self.source_path_indexes()["random_preset"]
 
     def is_event_spawn_source_path(self, path):
         source_key = self.normalized_path(path)
-        return source_key in {self.normalized_path(spawn_path) for spawn_path in self.event_spawn_source_paths()}
+        return source_key in self.source_path_indexes()["event_spawns"]
 
     def is_event_group_source_path(self, path):
         source_key = self.normalized_path(path)
-        return source_key in {self.normalized_path(group_path) for group_path in self.event_group_source_paths()}
+        return source_key in self.source_path_indexes()["event_groups"]
 
     def all_save_source_paths(self):
         paths = []
@@ -23424,6 +23720,18 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         )
 
     def source_has_changes(self, source_path):
+        source_key = self.normalized_path(source_path)
+        source_revisions = self.__dict__.setdefault("source_revisions", {})
+        source_change_cache = self.__dict__.setdefault("source_change_cache", {})
+        cache_key = (source_revisions.get(source_key, 0), source_key in self.dirty_source_keys_cache)
+        cached = source_change_cache.get(source_key)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+        changed = self.calculate_source_has_changes(source_path)
+        source_change_cache[source_key] = (cache_key, changed)
+        return changed
+
+    def calculate_source_has_changes(self, source_path):
         source_key = self.normalized_path(source_path)
         if self.is_environment_source_path(source_path):
             return self.environment_root is not None and format_cfgenvironment_xml(self.environment_root) != self.environment_original_text
@@ -23563,7 +23871,13 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def mark_source_dirty(self, source_path):
         if not source_path:
             return
-        self.dirty_source_keys_cache.add(self.normalized_path(source_path))
+        self.validation_request_generation = self.__dict__.get("validation_request_generation", 0) + 1
+        self.data_revision = self.__dict__.get("data_revision", 0) + 1
+        source_key = self.normalized_path(source_path)
+        source_revisions = self.__dict__.setdefault("source_revisions", {})
+        source_revisions[source_key] = source_revisions.get(source_key, 0) + 1
+        self.__dict__.setdefault("source_change_cache", {}).pop(source_key, None)
+        self.dirty_source_keys_cache.add(source_key)
         self.workspace_validation_stale = True
         self.set_dirty(True)
 
@@ -23785,6 +24099,9 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 if self.normalized_path(entry.source_path) != source_key
             ]
             self.original_entries.extend(entry.clone() for entry in self.entries_for_source(self.entries, source_path))
+        source_revisions = self.__dict__.setdefault("source_revisions", {})
+        source_revisions[source_key] = source_revisions.get(source_key, 0) + 1
+        self.__dict__.setdefault("source_change_cache", {}).pop(source_key, None)
         self.dirty_source_keys_cache.discard(source_key)
         self.set_dirty(True)
 
@@ -23803,6 +24120,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.original_weather_values = dict(self.weather_values_from_vars())
         self.economycore_original_text = self.economycore_current_text
         self.config_original_texts = dict(self.config_current_texts)
+        self.source_change_cache = {}
+        self.source_revisions = {}
         self.dirty_source_keys_cache = set()
         self.set_dirty(False)
 
