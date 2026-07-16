@@ -138,12 +138,12 @@ Basic workflow:
 - Environment editor for `cfgenvironment.xml` file registrations, territory mappings, populations, agents, spawn classnames, and explained runtime settings
 - Territories map editor with grouped layers, box selection, Ctrl multi-select, Alt pan, move, resize, add, duplicate, delete, undo, and redo
 - CE Zones viewer for official CE Tool project XML, usage paint layers, value tier layers, water/key point overlays, and matching Types filtering
-- Mapgroupproto viewer/editor for loot prototype groups, container filters, relative spawn points, placement counts, matching item candidates, search/filter, exact issue jumps, add group/container actions, and comment/delete cleanup
+- Mapgroupproto viewer/editor for loot prototype groups, container filters, relative spawn points, placement counts, matching item candidates, search plus category/usage/tier/tag filters, exact issue jumps, add group/container actions, and comment/delete cleanup
 - Weather editor with official defaults, custom default file, seasonal presets, and custom presets
 - Config and Profiles editors with syntax highlighting and line numbers
 - Logs Analyzer with readable summaries for DayZ server/session files and optional deep minidump scan through Windows Debugging Tools
 - Type splitter with copy/move modes, preview, backups, and optional `cfgeconomycore.xml` activation
-- Economy health / loot balance report estimating per-item findability, dead loot, overloaded loot, spawn-source coverage, relation pressure, and rarity from Types, mapgroups, events, spawnabletypes, randompresets, flags, and hoarding sensitivity
+- Economy health / loot balance report estimating per-item findability, dead loot, overloaded loot, spawn-source coverage, relation pressure, and rarity from Types, mapgroups, mission `areaflags.map`, events, spawnabletypes, randompresets, flags, and hoarding sensitivity
 - Generated type skeletons from PBOs/source configs when `CfgConvert.exe` is configured
 - Official mission creator for fresh Bohemia CE templates
 - Windows installer build through PyInstaller `onedir` plus Inno Setup
@@ -346,7 +346,7 @@ mapgrouppos.xml
 
 It reports duplicate groups, invalid or unknown relation names, containers that match no loaded type entries, groups without containers, containers without points, bad point coordinates/range/height values, and placed `mapgrouppos.xml` objects without a matching prototype. Reusable prototypes without placed instances and group/container lootmax differences are not treated as warnings.
 
-The module keeps the full XML source internally and shows a read-only selected-group XML preview for inspection. Users can search groups, filter for missing category/usage/value/tag filters or zero matching items, click validation issues to jump to exact groups, add groups, add containers, edit selected groups/containers/points, and comment out selected groups, containers, or points without rerunning full validation.
+The module keeps the full XML source internally and shows a read-only selected-group XML preview for inspection. Users can search groups and combine the existing status checks with dynamic category, usage, tier/value, and tag dropdowns. Relation filters match values assigned directly to a group or inherited by its containers. Users can also clear every filter at once, click validation issues to jump to exact groups, add groups, add containers, edit selected groups/containers/points, and comment out selected groups, containers, or points without rerunning full validation.
 
 The current guided editor covers group, container, relation filter, and point fields. Container names include common DayZ choices such as `lootWeapons`, `lootClothes`, `lootContainers`, `lootFloor`, and `lootTools`. Advanced dispatch/proxy editing, group duplication, and point add/delete workflows are still planned.
 
@@ -357,6 +357,8 @@ The Tools module includes a read-only Economy Health / Loot Balance report. It e
 ```text
 mapgroupproto.xml
 mapgrouppos.xml
+areaflags.map
+cfgareaflags.xml or cfglimitsdefinition.xml
 events.xml
 cfgeventspawns.xml
 cfgspawnabletypes.xml
@@ -367,9 +369,9 @@ The report uses mission `db\types.xml` plus split CE files referenced by `cfgeco
 
 Each item row includes nominal/min/lifetime/restock/cost, relations, flags, eligible spawn points, location density, hoarding sensitivity, effective rarity score, findability score, rarity index, estimated rarity label, spawn sources, and usage/tier distribution. `lootdispatch` items use exact `mapgroupproto.xml` dispatch proxies multiplied by matching `mapgrouppos.xml` placements; entries with additional categories also retain normal world, spawnabletypes, and event source analysis. Filters cover rarity, source, category, usage, value, tag, and search text.
 
-The report starts with green, yellow/orange, or red status cards for overall Economy Health and Loot Balance. The Action plan tab lists the concrete item rows to fix first, with suggested changes. Double-click an item or use `Open Type` to jump directly to its Types entry.
+The report starts with green, yellow/orange, or red status cards for overall Economy Health and Loot Balance. The Action plan tab lists the concrete item rows to fix first, with suggested changes. Double-click an item or use `Open Type` to jump directly to its Types entry. The report opens as an independent resizable, maximizable, and minimizable window; scrolling inside it does not move the main Tools page.
 
-`areaflags.map` usage paint can override the usage assigned to buildings in `mapgroupproto.xml`. A no-source result therefore means no source was found by the relation estimate, not proof that the item cannot spawn. Check painted usages such as `Historical` or `Lunapark` in CE Zones before changing nominal values. When a loaded CE project contains a matching usage-paint layer, the Action plan marks that row yellow for verification instead of treating it as a definite red blocker.
+When the mission contains `areaflags.map`, Economy Health reads it directly and samples each `mapgrouppos.xml` placement. Ordered usage and value bits come from mission `cfgareaflags.xml`, with `cfglimitsdefinition.xml` as fallback. Painted usage and tier values then replace the prototype relations for that exact placement before capacity and source matching are calculated. The report shows the map source, sampled placement count, and applied override counts. A loaded CE Tool project is only an advisory fallback when mission area flags cannot be applied.
 
 Detail tabs show relation pressure, spawn-source coverage, no-source candidates, and overloaded loot where nominal demand is higher than matching map opportunities. CSV export keeps the item table. JSON export also includes source summary, no-source, and overloaded loot sections.
 

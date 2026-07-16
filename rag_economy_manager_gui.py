@@ -3761,6 +3761,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         self.mapgroupproto_issues: list[ValidationIssue] = []
         self.mapgroupproto_search_var = tk.StringVar(value="")
         self.mapgroupproto_filter_var = tk.StringVar(value="All")
+        self.mapgroupproto_category_filter_var = tk.StringVar(value="All")
+        self.mapgroupproto_usage_filter_var = tk.StringVar(value="All")
+        self.mapgroupproto_value_filter_var = tk.StringVar(value="All")
+        self.mapgroupproto_tag_filter_var = tk.StringVar(value="All")
+        self.mapgroupproto_relation_filter_combos = {}
         self.mapgroupproto_group_tree = None
         self.mapgroupproto_container_tree = None
         self.mapgroupproto_point_tree = None
@@ -5299,6 +5304,11 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
 
     def on_tools_mousewheel(self, event):
         if self.active_module != "tools" or self.tools_canvas is None:
+            return None
+        try:
+            if event.widget.winfo_toplevel() is not self:
+                return None
+        except tk.TclError:
             return None
         if event.widget is self.tool_activity_text:
             return None
@@ -7260,7 +7270,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         search_entry = ttk.Entry(search_row, textvariable=self.mapgroupproto_search_var)
         search_entry.grid(row=0, column=1, sticky="ew")
         search_entry.bind("<KeyRelease>", lambda _event: self.populate_mapgroupproto_tables(), add="+")
-        ttk.Label(search_row, text="Filter", style="FieldName.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(6, 0))
+        ttk.Label(search_row, text="Status", style="FieldName.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(6, 0))
         filter_combo = ttk.Combobox(
             search_row,
             textvariable=self.mapgroupproto_filter_var,
@@ -7269,6 +7279,29 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         )
         filter_combo.grid(row=1, column=1, sticky="ew", pady=(6, 0))
         filter_combo.bind("<<ComboboxSelected>>", lambda _event: self.populate_mapgroupproto_tables(), add="+")
+
+        relation_filters = ttk.Frame(search_row)
+        relation_filters.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        relation_filters.columnconfigure(1, weight=1)
+        relation_filters.columnconfigure(3, weight=1)
+        relation_filter_specs = (
+            ("Category", "category", self.mapgroupproto_category_filter_var, 0, 0),
+            ("Usage", "usage", self.mapgroupproto_usage_filter_var, 0, 2),
+            ("Tier / value", "value", self.mapgroupproto_value_filter_var, 1, 0),
+            ("Tag", "tag", self.mapgroupproto_tag_filter_var, 1, 2),
+        )
+        for label, kind, variable, row, column in relation_filter_specs:
+            ttk.Label(relation_filters, text=label, style="FieldName.TLabel").grid(
+                row=row, column=column, sticky="w", padx=(0 if column == 0 else 10, 6), pady=(0 if row == 0 else 6, 0)
+            )
+            combo = ttk.Combobox(relation_filters, textvariable=variable, values=("All",), state="readonly", width=14)
+            combo.grid(row=row, column=column + 1, sticky="ew", pady=(0 if row == 0 else 6, 0))
+            combo.bind("<<ComboboxSelected>>", lambda _event: self.populate_mapgroupproto_tables(), add="+")
+            self.bind_combobox_open_on_click(combo)
+            self.mapgroupproto_relation_filter_combos[kind] = combo
+        clear_filters = ttk.Frame(search_row)
+        clear_filters.grid(row=3, column=0, columnspan=2, sticky="e", pady=(6, 0))
+        self.make_button(clear_filters, "Clear filters", self.clear_mapgroupproto_filters, tooltip="Reset search and every Mapgroupproto group filter.")
         self.mapgroupproto_group_tree = ttk.Treeview(left, columns=("lootmax", "placed", "containers", "points", "items", "issues"), show="tree headings", selectmode="browse", style="Economy.Treeview")
         self.mapgroupproto_group_tree.heading("#0", text="Group")
         for column, label in (("lootmax", "Lootmax"), ("placed", "Placed"), ("containers", "Containers"), ("points", "Points"), ("items", "Items"), ("issues", "Issues")):
@@ -12865,6 +12898,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
     def populate_mapgroupproto_tables(self):
         if self.mapgroupproto_group_tree is None:
             return
+        self.refresh_mapgroupproto_relation_filter_values()
         selected_name = ""
         if self.mapgroupproto_selected_index is not None and 0 <= self.mapgroupproto_selected_index < len(self.mapgroupproto_groups):
             selected_name = self.mapgroupproto_groups[self.mapgroupproto_selected_index].name
@@ -12886,19 +12920,60 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 return
         self.populate_mapgroupproto_group_detail(None)
 
+    def mapgroupproto_relation_filter_specs(self):
+        return (
+            ("category", "categories", getattr(self, "mapgroupproto_category_filter_var", None)),
+            ("usage", "usages", getattr(self, "mapgroupproto_usage_filter_var", None)),
+            ("value", "values", getattr(self, "mapgroupproto_value_filter_var", None)),
+            ("tag", "tags", getattr(self, "mapgroupproto_tag_filter_var", None)),
+        )
+
+    def mapgroupproto_group_relation_values(self, group, attribute):
+        values = {str(value) for value in (getattr(group, attribute, ()) or ()) if str(value).strip()}
+        for container in getattr(group, "containers", ()) or ():
+            values.update(str(value) for value in (getattr(container, attribute, ()) or ()) if str(value).strip())
+        return values
+
+    def refresh_mapgroupproto_relation_filter_values(self):
+        combos = getattr(self, "mapgroupproto_relation_filter_combos", {})
+        for kind, attribute, variable in self.mapgroupproto_relation_filter_specs():
+            combo = combos.get(kind)
+            if combo is None or variable is None:
+                continue
+            values = set()
+            for group in self.mapgroupproto_groups:
+                values.update(self.mapgroupproto_group_relation_values(group, attribute))
+            options = ("All",) + tuple(sorted(values, key=str.casefold))
+            combo.configure(values=options)
+            if variable.get() not in options:
+                variable.set("All")
+
+    def clear_mapgroupproto_filters(self, refresh=True):
+        self.mapgroupproto_search_var.set("")
+        self.mapgroupproto_filter_var.set("All")
+        for _kind, _attribute, variable in self.mapgroupproto_relation_filter_specs():
+            if variable is not None:
+                variable.set("All")
+        if refresh:
+            self.populate_mapgroupproto_tables()
+
     def mapgroupproto_group_matches_filter(self, group):
         option = self.mapgroupproto_filter_var.get() if hasattr(self, "mapgroupproto_filter_var") else "All"
         containers = getattr(group, "containers", ()) or ()
-        if option == "Missing category":
-            return any(not getattr(container, "categories", ()) for container in containers)
-        if option == "Missing usage":
-            return any(not getattr(container, "usages", ()) for container in containers)
-        if option == "Missing value":
-            return any(not getattr(container, "values", ()) for container in containers)
-        if option == "Missing tag":
-            return any(not getattr(container, "tags", ()) for container in containers)
-        if option == "Zero matching items":
-            return any(getattr(container, "matching_item_count", 0) <= 0 for container in containers)
+        if option == "Missing category" and not any(not getattr(container, "categories", ()) for container in containers):
+            return False
+        if option == "Missing usage" and not any(not getattr(container, "usages", ()) for container in containers):
+            return False
+        if option == "Missing value" and not any(not getattr(container, "values", ()) for container in containers):
+            return False
+        if option == "Missing tag" and not any(not getattr(container, "tags", ()) for container in containers):
+            return False
+        if option == "Zero matching items" and not any(getattr(container, "matching_item_count", 0) <= 0 for container in containers):
+            return False
+        for _kind, attribute, variable in self.mapgroupproto_relation_filter_specs():
+            selected = variable.get().strip() if variable is not None else "All"
+            if selected != "All" and selected.casefold() not in {value.casefold() for value in self.mapgroupproto_group_relation_values(group, attribute)}:
+                return False
         return True
 
     def select_mapgroupproto_group_by_name(self, group_name, update_search=True):
@@ -12906,10 +12981,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return False
         iid = self.mapgroupproto_group_iids.get(group_name)
         if iid is None and update_search and hasattr(self, "mapgroupproto_search_var"):
-            self.mapgroupproto_search_var.set("")
-            if hasattr(self, "mapgroupproto_filter_var"):
-                self.mapgroupproto_filter_var.set("All")
-            self.populate_mapgroupproto_tables()
+            self.clear_mapgroupproto_filters(refresh=True)
             iid = self.mapgroupproto_group_iids.get(group_name)
         if iid is None:
             return False
@@ -22099,6 +22171,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             return
         mapgroupproto_path = self.find_mission_file("mapgroupproto.xml")
         mapgrouppos_path = self.find_mission_file("mapgrouppos.xml")
+        areaflags_path = self.find_mission_file("areaflags.map")
+        areaflags_definition_path = self.find_mission_file("cfgareaflags.xml") or self.find_mission_file("cfglimitsdefinition.xml")
         missing = []
         if not mapgroupproto_path:
             missing.append("mapgroupproto.xml")
@@ -22130,6 +22204,8 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                     random_presets=random_presets,
                     events=events,
                     event_spawn_positions=event_spawn_positions,
+                    areaflags_path=areaflags_path or None,
+                    areaflags_definition_path=areaflags_definition_path or None,
                 )
                 error = None
             except (OSError, ET.ParseError, ValueError) as exc:
@@ -22153,6 +22229,12 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             f"{len(report.item_rows)} item row(s), {len(report.relation_summaries)} relation row(s), {len(report.unmatched_items)} unmatched item(s).",
             "success" if not report.warnings else "warning",
         )
+        if report.areaflags_path:
+            self.log(
+                f"Mission areaflags applied: {report.areaflags_sampled_placements} placement(s), "
+                f"{report.areaflags_usage_override_count} usage override(s), {report.areaflags_value_override_count} value override(s).",
+                "success",
+            )
         self.set_status("Loot analysis complete", "success")
 
     def open_loot_distribution_table_window(self, report):
@@ -22160,14 +22242,15 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
         window.title("Economy Health / Loot Balance")
         window.geometry("1280x760")
         window.minsize(980, 600)
+        window.resizable(True, True)
         window.configure(bg=GRAPHITE_BG)
-        window.transient(self)
         apply_app_icon(window)
         item_rows = list(report.item_rows)
         dead_rows = loot_distribution_dead_loot_rows(report)
         overloaded_rows = loot_distribution_overloaded_rows(report)
         usage_paint_names = set()
-        if self.ce_zones_project is not None:
+        using_mission_areaflags = bool(report.areaflags_path)
+        if not using_mission_areaflags and self.ce_zones_project is not None:
             for layer in self.ce_zones_project.layers:
                 if layer.kind != "usage_paint":
                     continue
@@ -22188,7 +22271,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             overall_note = "Spawn blockers found"
         elif usage_paint_rows or usage_paint_relations or overloaded_rows or over_target_relations or tight_relations or report.warnings:
             overall_state, overall_color = "Orange", GRAPHITE_WARNING
-            overall_note = "Review balance / usage paint"
+            overall_note = "Review balance / warnings"
         else:
             overall_state, overall_color = "Green", GRAPHITE_SUCCESS_DARK
             overall_note = "No major blockers"
@@ -22215,7 +22298,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             ("Overall Economy Health", overall_state, overall_note, overall_color),
             ("Loot Balance", balance_state, balance_note, balance_color),
             ("Change first", action_count, "red/orange action rows", GRAPHITE_CARD_SOFT),
-            ("No-source rows", len(dead_rows), "verify usage paint first", GRAPHITE_CARD_SOFT),
+            ("No-source rows", len(dead_rows), "after applied map rules", GRAPHITE_CARD_SOFT),
             ("Overloaded", len(overloaded_rows), "nominal > matching points", GRAPHITE_CARD_SOFT),
         )
         for column, (label, value, note, color) in enumerate(summary_items):
@@ -22226,6 +22309,16 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             tk.Label(box, text=label, bg=color, fg=muted_fg, font=("Segoe UI", 9)).pack(anchor="w")
             tk.Label(box, text=str(value), bg=color, fg=text_fg, font=("Segoe UI", 14, "bold")).pack(anchor="w", pady=(2, 0))
             tk.Label(box, text=str(note), bg=color, fg=muted_fg, font=("Segoe UI", 8), wraplength=180, justify="left").pack(anchor="w", pady=(2, 0))
+        if using_mission_areaflags:
+            area_flags_note = (
+                f"Area flags: mission {Path(report.areaflags_path).name} | {report.areaflags_sampled_placements} placements sampled | "
+                f"{report.areaflags_usage_override_count} usage / {report.areaflags_value_override_count} value overrides"
+            )
+        else:
+            area_flags_note = "Area flags: mission areaflags.map unavailable or not applied; CE project usage paint is advisory only."
+        ttk.Label(header, text=area_flags_note, style="FieldMuted.TLabel", wraplength=1000, justify="left").grid(
+            row=1, column=0, columnspan=5, sticky="w", pady=(10, 0)
+        )
 
         filters = ttk.LabelFrame(shell, text="Filter", padding=10)
         filters.grid(row=1, column=0, sticky="ew", pady=(0, 10))
@@ -22522,14 +22615,24 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                 )
 
             source_tree.delete(*source_tree.get_children())
+            world_source_note = (
+                "Map loot through mapgroupproto/mapgrouppos relations with mission areaflags overrides applied."
+                if using_mission_areaflags
+                else "Normal map loot through mapgroupproto/mapgrouppos relations."
+            )
+            no_source_note = (
+                "No source matched after mission areaflags sampling."
+                if using_mission_areaflags
+                else "No source matched this estimate. areaflags.map usage paint can still override building usage."
+            )
             source_notes = {
-                "World": "Normal map loot through mapgroupproto/mapgrouppos relations.",
+                "World": world_source_note,
                 "Dispatch proxy": "Exact mapgroupproto dispatch proxies multiplied by matching mapgrouppos placements.",
                 "Cargo/Attachment": "Derived from cfgspawnabletypes cargo/attachments and random presets.",
                 "Event": "Derived from enabled events.xml children and cfgeventspawns positions.",
                 "Crafted": "Marked crafted in types flags.",
                 "Deloot": "Marked deloot in types flags.",
-                "No matched source": "No source matched this estimate. areaflags.map usage paint can still provide valid spawn areas by overriding building usage.",
+                "No matched source": no_source_note,
             }
             for bucket in loot_distribution_source_summary(report):
                 name = str(bucket["Source"])
@@ -22547,6 +22650,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
             for row in dead_rows:
                 painted_usages = sorted({value for value in row.usages if value.casefold() in usage_paint_names}, key=str.casefold)
                 usage_paint_candidate = bool(painted_usages)
+                action = "Add/fix a source or set nominal to 0." if using_mission_areaflags else "Check areaflags.map usage paint first; then add/fix a source or set nominal to 0."
                 issue_tree.insert(
                     "",
                     "end",
@@ -22555,7 +22659,7 @@ class RaGEconomyManagerApp(DND_ROOT_CLASS):
                     values=(
                         "Yellow" if usage_paint_candidate else "Red",
                         f"No mapgroup source matched; loaded usage paint may provide {', '.join(painted_usages)} areas." if usage_paint_candidate else "No spawn source matched this estimate.",
-                        "Inspect matching CE Zones usage-paint layer before changing nominal." if usage_paint_candidate else "Check areaflags.map usage paint first; then add/fix a source or set nominal to 0.",
+                        "Inspect matching CE Zones usage-paint layer before changing nominal." if usage_paint_candidate else action,
                         row.nominal,
                         row.eligible_spawn_points,
                         row.spawn_source_text,

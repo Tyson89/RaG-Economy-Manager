@@ -594,6 +594,13 @@ class LootMapGroupSummary:
 
 
 @dataclass(frozen=True)
+class MapGroupPlacement:
+    name: str
+    x: float
+    z: float
+
+
+@dataclass(frozen=True)
 class LootRelationSummary:
     kind: str
     name: str
@@ -695,6 +702,13 @@ class LootDistributionReport:
     body: str = ""
     scope: str = ""
     category_hint: str = ""
+    areaflags_path: str = ""
+    areaflags_definition_path: str = ""
+    areaflags_sampled_placements: int = 0
+    areaflags_usage_override_count: int = 0
+    areaflags_value_override_count: int = 0
+    areaflags_usage_names: tuple[str, ...] = ()
+    areaflags_value_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2735,6 +2749,23 @@ def parse_cfglimitsdefinition_file(path: str | os.PathLike[str]) -> tuple[dict[s
     return {field: sorted(values, key=str.casefold) for field, values in definitions.items()}, []
 
 
+def parse_areaflags_relation_names(path: str | os.PathLike[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    ensure_not_ignored_storage_path(path)
+    root = parse_xml_file(path).getroot()
+    ordered = {"usage": [], "value": []}
+    seen = {"usage": set(), "value": set()}
+    for element in root.iter():
+        kind = str(element.tag).casefold()
+        if kind not in ordered:
+            continue
+        name = element.attrib.get("name", "").strip()
+        key = name.casefold()
+        if name and key not in seen[kind]:
+            ordered[kind].append(name)
+            seen[kind].add(key)
+    return tuple(ordered["usage"]), tuple(ordered["value"])
+
+
 def write_cfglimitsdefinition_file(definitions: dict[str, list[str]], output_path: str | os.PathLike[str]) -> None:
     ensure_not_ignored_storage_path(output_path)
     root = ET.Element("lists")
@@ -4053,6 +4084,23 @@ def parse_mapgrouppos_counts(path: str | os.PathLike[str]) -> Counter:
     return counts
 
 
+def parse_mapgrouppos_placements(path: str | os.PathLike[str]) -> tuple[MapGroupPlacement, ...]:
+    root = parse_xml_file(path).getroot()
+    placements: list[MapGroupPlacement] = []
+    for element in root.iter():
+        name = element.attrib.get("name", "").strip()
+        parts = element.attrib.get("pos", "").strip().split()
+        if not name or len(parts) < 2:
+            continue
+        try:
+            x = float(parts[0])
+            z = float(parts[2] if len(parts) >= 3 else parts[1])
+        except ValueError:
+            continue
+        placements.append(MapGroupPlacement(name=name, x=x, z=z))
+    return tuple(placements)
+
+
 def parse_number_list(value: str, expected_count: int) -> bool:
     parts = str(value or "").strip().split()
     if len(parts) != expected_count:
@@ -4383,6 +4431,91 @@ def parse_mapgroupproto_summaries(path: str | os.PathLike[str], placement_counts
     return tuple(sorted(summaries, key=lambda item: item.name.casefold()))
 
 
+def areaflags_relation_values_at(
+    area_map: AreaFlagsMap,
+    placement: MapGroupPlacement,
+    usage_names: tuple[str, ...],
+    value_names: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    if placement.x < 0 or placement.z < 0 or placement.x >= area_map.world_x or placement.z >= area_map.world_z:
+        return None
+    column = min(area_map.width - 1, int(placement.x * area_map.width / area_map.world_x))
+    row = min(area_map.height - 1, int(placement.z * area_map.height / area_map.world_z))
+    index = row * area_map.width + column
+    usage_flags = sum(int(area_map.usage_planes[plane][index]) << (plane * 8) for plane in range(4))
+    value_flags = int(area_map.value_plane[index])
+    usages = tuple(name for bit, name in enumerate(usage_names[:32]) if usage_flags & (1 << bit))
+    values = tuple(name for bit, name in enumerate(value_names[:8]) if value_flags & (1 << bit))
+    return usages, values
+
+
+def apply_areaflags_to_group_summaries(
+    group_summaries: tuple[LootMapGroupSummary, ...],
+    placements: tuple[MapGroupPlacement, ...],
+    area_map: AreaFlagsMap,
+    usage_names: tuple[str, ...],
+    value_names: tuple[str, ...],
+) -> tuple[tuple[LootMapGroupSummary, ...], dict[str, object]]:
+    placements_by_name: dict[str, list[MapGroupPlacement]] = {}
+    for placement in placements:
+        placements_by_name.setdefault(placement.name, []).append(placement)
+
+    adjusted: list[LootMapGroupSummary] = []
+    sampled = 0
+    outside = 0
+    usage_overrides = 0
+    value_overrides = 0
+    observed_usages: set[str] = set()
+    observed_values: set[str] = set()
+    for group in group_summaries:
+        group_placements = placements_by_name.get(group.name, [])
+        if not group_placements:
+            adjusted.append(group)
+            continue
+        variants: Counter = Counter()
+        relation_variants: dict[tuple[tuple[str, tuple[str, ...]], ...], dict[str, tuple[str, ...]]] = {}
+        for placement in group_placements:
+            sampled_values = areaflags_relation_values_at(area_map, placement, usage_names, value_names)
+            relations = dict(group.relations)
+            if sampled_values is None:
+                outside += 1
+            else:
+                sampled += 1
+                usages, values = sampled_values
+                if usages:
+                    relations["usage"] = usages
+                    observed_usages.update(usages)
+                    usage_overrides += 1
+                if values:
+                    relations["value"] = values
+                    observed_values.update(values)
+                    value_overrides += 1
+            signature = tuple((kind, tuple(relations.get(kind, ()))) for kind in RELATION_FIELDS)
+            variants[signature] += 1
+            relation_variants[signature] = relations
+        for signature, count in variants.items():
+            adjusted.append(
+                LootMapGroupSummary(
+                    name=group.name,
+                    building_count=count,
+                    spawnpoints_per_building=group.spawnpoints_per_building,
+                    capacity_per_building=group.capacity_per_building,
+                    total_spawnpoints=group.spawnpoints_per_building * count,
+                    total_capacity=group.capacity_per_building * count,
+                    relations=relation_variants[signature],
+                    dispatch_proxies=group.dispatch_proxies,
+                )
+            )
+    return tuple(adjusted), {
+        "sampled": sampled,
+        "outside": outside,
+        "usage_overrides": usage_overrides,
+        "value_overrides": value_overrides,
+        "usage_names": tuple(sorted(observed_usages, key=str.casefold)),
+        "value_names": tuple(sorted(observed_values, key=str.casefold)),
+    }
+
+
 def type_nominal_value(entry: TypeEntry) -> int:
     return parse_positive_int(entry.child_text("nominal", "0"))
 
@@ -4637,11 +4770,23 @@ def format_loot_distribution_csv(report: LootDistributionReport) -> str:
 
 
 def format_loot_distribution_json(report: LootDistributionReport) -> str:
+    areaflags_applied = bool(report.areaflags_path and report.areaflags_sampled_placements)
     return json.dumps(
         {
-            "limitation": "Estimated configured rarity/distribution from mission files. Spatial areaflags.map usage paint can override mapgroupproto building usage and is not included in relation capacity. The report also cannot know live persistence, player inventories, hoarding, cleanup, restock timing, dynamic events, or current CE state.",
+            "limitation": "Estimated configured rarity/distribution from mission files. "
+            + ("Mission areaflags.map usage/value overrides are included. " if areaflags_applied else "Spatial areaflags.map overrides are not included. ")
+            + "The report cannot know live persistence, player inventories, hoarding, cleanup, restock timing, dynamic events, or current CE state.",
             "mapgroupproto": report.mapgroupproto_path,
             "mapgrouppos": report.mapgrouppos_path,
+            "areaflags": {
+                "path": report.areaflags_path,
+                "definition_path": report.areaflags_definition_path,
+                "sampled_placements": report.areaflags_sampled_placements,
+                "usage_overrides": report.areaflags_usage_override_count,
+                "value_overrides": report.areaflags_value_override_count,
+                "usage_names": report.areaflags_usage_names,
+                "value_names": report.areaflags_value_names,
+            },
             "summary": {
                 "map_group_count": report.map_group_count,
                 "placed_group_count": report.placed_group_count,
@@ -4668,10 +4813,41 @@ def analyze_loot_distribution(
     random_presets: Iterable[RandomPresetEntry] = (),
     events: Iterable[EventEntry] = (),
     event_spawn_positions: dict[str, list[EventSpawnPosition]] | None = None,
+    areaflags_path: str | os.PathLike[str] | None = None,
+    areaflags_definition_path: str | os.PathLike[str] | None = None,
 ) -> LootDistributionReport:
     entries = list(entries)
     placement_counts = parse_mapgrouppos_counts(mapgrouppos_path)
-    group_summaries = parse_mapgroupproto_summaries(mapgroupproto_path, placement_counts)
+    prototype_summaries = parse_mapgroupproto_summaries(mapgroupproto_path, placement_counts)
+    group_summaries = prototype_summaries
+    areaflags_stats: dict[str, object] = {}
+    areaflags_warnings: list[str] = []
+    applied_areaflags_path = ""
+    applied_definition_path = ""
+    if areaflags_path:
+        if not areaflags_definition_path:
+            areaflags_warnings.append("Mission areaflags.map found, but cfgareaflags.xml/cfglimitsdefinition.xml is unavailable; usage/value paint was not applied.")
+        else:
+            try:
+                area_map = parse_areaflags_map(areaflags_path)
+                usage_names, value_names = parse_areaflags_relation_names(areaflags_definition_path)
+                if not usage_names and not value_names:
+                    areaflags_warnings.append("Area flag definition contains no ordered usage/value names; areaflags.map was not applied.")
+                else:
+                    placements = parse_mapgrouppos_placements(mapgrouppos_path)
+                    group_summaries, areaflags_stats = apply_areaflags_to_group_summaries(
+                        prototype_summaries,
+                        placements,
+                        area_map,
+                        usage_names,
+                        value_names,
+                    )
+                    applied_areaflags_path = str(areaflags_path)
+                    applied_definition_path = str(areaflags_definition_path)
+                    if int(areaflags_stats.get("outside", 0)):
+                        areaflags_warnings.append(f"{areaflags_stats['outside']} mapgrouppos placement(s) fall outside areaflags.map world bounds.")
+            except (OSError, ET.ParseError, ValueError) as exc:
+                areaflags_warnings.append(f"Could not apply mission areaflags.map: {exc}")
     dispatch_proxy_counts: Counter = Counter()
     for group in group_summaries:
         if group.building_count <= 0:
@@ -4814,8 +4990,8 @@ def analyze_loot_distribution(
             )
         )
 
-    warnings = []
-    unplaced_groups = [group.name for group in group_summaries if group.building_count <= 0]
+    warnings = list(areaflags_warnings)
+    unplaced_groups = [group.name for group in prototype_summaries if group.building_count <= 0]
     if unplaced_groups:
         warnings.append(f"{len(unplaced_groups)} mapgroupproto group(s) have no matching placement in mapgrouppos.xml.")
     if unmatched_items:
@@ -4824,8 +5000,8 @@ def analyze_loot_distribution(
     return LootDistributionReport(
         mapgroupproto_path=str(mapgroupproto_path),
         mapgrouppos_path=str(mapgrouppos_path),
-        map_group_count=len(group_summaries),
-        placed_group_count=sum(1 for group in group_summaries if group.building_count > 0),
+        map_group_count=len(prototype_summaries),
+        placed_group_count=sum(1 for group in prototype_summaries if group.building_count > 0),
         total_capacity=sum(group.total_capacity for group in group_summaries),
         total_spawnpoints=sum(group.total_spawnpoints for group in group_summaries),
         total_nominal=total_nominal,
@@ -4834,6 +5010,13 @@ def analyze_loot_distribution(
         map_group_summaries=group_summaries,
         unmatched_items=tuple(unmatched_items),
         warnings=tuple(warnings),
+        areaflags_path=applied_areaflags_path,
+        areaflags_definition_path=applied_definition_path,
+        areaflags_sampled_placements=int(areaflags_stats.get("sampled", 0)),
+        areaflags_usage_override_count=int(areaflags_stats.get("usage_overrides", 0)),
+        areaflags_value_override_count=int(areaflags_stats.get("value_overrides", 0)),
+        areaflags_usage_names=tuple(areaflags_stats.get("usage_names", ())),
+        areaflags_value_names=tuple(areaflags_stats.get("value_names", ())),
     )
 
 
@@ -4845,6 +5028,7 @@ def format_loot_distribution_report(report: LootDistributionReport, limit: int =
         "-------",
         f"- mapgroupproto: {report.mapgroupproto_path}",
         f"- mapgrouppos: {report.mapgrouppos_path}",
+        f"- areaflags: {report.areaflags_path or 'not applied'}",
         f"- Prototype groups: {report.map_group_count}",
         f"- Placed prototype groups: {report.placed_group_count}",
         f"- Total map loot capacity estimate: {report.total_capacity}",
@@ -4860,7 +5044,7 @@ def format_loot_distribution_report(report: LootDistributionReport, limit: int =
         "- lootdispatch sources come from exact mapgroupproto dispatch proxies multiplied by matching mapgrouppos placements.",
         "- Demand comes from loaded Types nominal values plus derived cfgspawnabletypes/cfgrandompresets and events.xml child links.",
         "- Relation matching uses category, usage, value, and tag names.",
-        "- Spatial areaflags.map usage paint can override mapgroupproto building usage. Verify painted usages such as Historical or Lunapark before treating a no-source row as dead loot.",
+        f"- Mission areaflags.map sampled {report.areaflags_sampled_placements} map placement(s); applied {report.areaflags_usage_override_count} usage and {report.areaflags_value_override_count} value override(s)." if report.areaflags_path else "- Mission areaflags.map was not applied; usage paint may still override mapgroupproto building usage.",
         "",
     ]
     if report.warnings:
@@ -4871,7 +5055,7 @@ def format_loot_distribution_report(report: LootDistributionReport, limit: int =
     dead_rows = loot_distribution_dead_loot_rows(report)
     overloaded_rows = loot_distribution_overloaded_rows(report)
     lines.extend(["Economy health", "--------------"])
-    lines.append(f"- No-source rows (verify usage paint): {len(dead_rows)}")
+    lines.append(f"- No-source rows: {len(dead_rows)}")
     lines.append(f"- Overloaded loot rows: {len(overloaded_rows)}")
     for bucket in loot_distribution_source_summary(report):
         lines.append(
@@ -4933,7 +5117,7 @@ def format_loot_distribution_report(report: LootDistributionReport, limit: int =
 
     lines.extend(["Next useful checks", "------------------"])
     lines.append("- Check over-target relations first; these categories/usages likely have too much nominal demand for available map slots.")
-    lines.append("- Check no-capacity relations, then verify areaflags.map usage paint before treating them as invalid; painted usage overrides building usage.")
+    lines.append("- Check no-capacity relations; verify areaflags.map usage paint first when mission area flags were unavailable.")
     lines.append("- Use this report before rarity scaling so balancing is based on actual map support.")
     return "\n".join(lines)
 
